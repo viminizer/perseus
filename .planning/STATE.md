@@ -4,7 +4,7 @@
 
 **Milestone:** v1.0 — Core HTTP Client
 **Phase:** 1 (Foundation)
-**Status:** Not started
+**Status:** Planned
 
 ## Progress
 
