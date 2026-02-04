@@ -1,16 +1,16 @@
 mod layout;
 mod widgets;
 
-use layout::{AppLayout, RequestLayout};
+use layout::{AppLayout, RequestLayout, ResponseLayout};
 use ratatui::{
     layout::Rect,
     style::{Color, Style},
-    text::Line,
+    text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
 
-use crate::app::{App, Panel, RequestField};
+use crate::app::{App, Panel, RequestField, ResponseStatus};
 
 pub fn render(frame: &mut Frame, app: &App) {
     let layout = AppLayout::new(frame.area());
@@ -83,10 +83,82 @@ fn render_response_panel(frame: &mut Frame, app: &App, area: Rect) {
         Color::White
     };
 
-    let response_block = Block::default()
+    let outer_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border_color))
         .title("Response");
 
-    frame.render_widget(response_block, area);
+    let inner_area = outer_block.inner(area);
+    frame.render_widget(outer_block, area);
+
+    match &app.response {
+        ResponseStatus::Empty => {
+            let hint = Paragraph::new("Press Enter to send request")
+                .style(Style::default().fg(Color::DarkGray));
+            frame.render_widget(hint, inner_area);
+        }
+        ResponseStatus::Loading => {
+            let loading = Paragraph::new("Loading...")
+                .style(Style::default().fg(Color::Yellow));
+            frame.render_widget(loading, inner_area);
+        }
+        ResponseStatus::Error(msg) => {
+            let error = Paragraph::new(msg.as_str())
+                .style(Style::default().fg(Color::Red));
+            frame.render_widget(error, inner_area);
+        }
+        ResponseStatus::Success(data) => {
+            let response_layout = ResponseLayout::new(inner_area);
+            render_response_content(frame, data, &response_layout);
+        }
+    }
+}
+
+fn render_response_content(
+    frame: &mut Frame,
+    data: &crate::app::ResponseData,
+    layout: &ResponseLayout,
+) {
+    let status_color = if data.status >= 200 && data.status < 300 {
+        Color::Green
+    } else if data.status >= 400 {
+        Color::Red
+    } else {
+        Color::Yellow
+    };
+
+    let status_line = Line::from(vec![
+        Span::styled(
+            format!("{} {}", data.status, data.status_text),
+            Style::default().fg(status_color),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            format!("({}ms)", data.duration_ms),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]);
+
+    let status_block = Block::default().borders(Borders::ALL).title("Status");
+    let status_widget = Paragraph::new(status_line).block(status_block);
+    frame.render_widget(status_widget, layout.status_area);
+
+    let headers_text: Vec<Line> = data
+        .headers
+        .iter()
+        .map(|(k, v)| {
+            Line::from(vec![
+                Span::styled(format!("{}: ", k), Style::default().fg(Color::Cyan)),
+                Span::raw(v),
+            ])
+        })
+        .collect();
+
+    let headers_block = Block::default().borders(Borders::ALL).title("Headers");
+    let headers_widget = Paragraph::new(headers_text).block(headers_block);
+    frame.render_widget(headers_widget, layout.headers_area);
+
+    let body_block = Block::default().borders(Borders::ALL).title("Body");
+    let body_widget = Paragraph::new(data.body.as_str()).block(body_block);
+    frame.render_widget(body_widget, layout.body_area);
 }
