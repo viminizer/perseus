@@ -11,6 +11,24 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 
 use crate::ui;
 
+#[derive(Debug, Clone, Default)]
+pub enum ResponseStatus {
+    #[default]
+    Empty,
+    Loading,
+    Success(ResponseData),
+    Error(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct ResponseData {
+    pub status: u16,
+    pub status_text: String,
+    pub headers: Vec<(String, String)>,
+    pub body: String,
+    pub duration_ms: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HttpMethod {
     #[default]
@@ -88,6 +106,7 @@ pub struct App {
     running: bool,
     pub request: RequestState,
     pub focus: FocusState,
+    pub response: ResponseStatus,
 }
 
 impl App {
@@ -96,6 +115,7 @@ impl App {
             running: true,
             request: RequestState::default(),
             focus: FocusState::default(),
+            response: ResponseStatus::Empty,
         }
     }
 
