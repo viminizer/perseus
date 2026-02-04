@@ -32,6 +32,13 @@ pub struct ResponseData {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InputMode {
+    #[default]
+    Normal,
+    Insert,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HttpMethod {
     #[default]
     Get,
@@ -110,6 +117,7 @@ pub struct App {
     pub focus: FocusState,
     pub response: ResponseStatus,
     pub client: Client,
+    pub input_mode: InputMode,
 }
 
 impl App {
@@ -125,6 +133,7 @@ impl App {
             focus: FocusState::default(),
             response: ResponseStatus::Empty,
             client,
+            input_mode: InputMode::Normal,
         }
     }
 
