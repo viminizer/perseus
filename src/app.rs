@@ -3,7 +3,7 @@ use std::panic;
 
 use anyhow::Result;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind},
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind},
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
@@ -119,13 +119,54 @@ impl App {
 
             if event::poll(std::time::Duration::from_millis(100))? {
                 if let Event::Key(key) = event::read()? {
-                    if key.kind == KeyEventKind::Press && key.code == KeyCode::Char('q') {
-                        self.running = false;
+                    if key.kind == KeyEventKind::Press {
+                        self.handle_key(key);
                     }
                 }
             }
         }
 
         Ok(())
+    }
+
+    fn handle_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Tab => self.cycle_panel(),
+            KeyCode::Up | KeyCode::Char('k') => self.prev_field(),
+            KeyCode::Down | KeyCode::Char('j') => self.next_field(),
+            KeyCode::Char('q') | KeyCode::Esc => self.running = false,
+            _ => {}
+        }
+    }
+
+    fn cycle_panel(&mut self) {
+        self.focus.panel = match self.focus.panel {
+            Panel::Request => Panel::Response,
+            Panel::Response => Panel::Request,
+        };
+    }
+
+    fn next_field(&mut self) {
+        if self.focus.panel != Panel::Request {
+            return;
+        }
+        self.focus.request_field = match self.focus.request_field {
+            RequestField::Method => RequestField::Url,
+            RequestField::Url => RequestField::Headers,
+            RequestField::Headers => RequestField::Body,
+            RequestField::Body => RequestField::Method,
+        };
+    }
+
+    fn prev_field(&mut self) {
+        if self.focus.panel != Panel::Request {
+            return;
+        }
+        self.focus.request_field = match self.focus.request_field {
+            RequestField::Method => RequestField::Body,
+            RequestField::Url => RequestField::Method,
+            RequestField::Headers => RequestField::Url,
+            RequestField::Body => RequestField::Headers,
+        };
     }
 }
