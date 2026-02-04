@@ -9,6 +9,8 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 
+use crate::ui;
+
 pub struct App {
     running: bool,
 }
@@ -54,7 +56,7 @@ impl App {
 
         while self.running {
             terminal.draw(|frame| {
-                frame.render_widget(ratatui::widgets::Clear, frame.area());
+                ui::render(frame, self);
             })?;
 
             if event::poll(std::time::Duration::from_millis(100))? {

@@ -1,4 +1,4 @@
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Layout, Rect};
 
 pub struct AppLayout {
     pub request_area: Rect,
@@ -6,10 +6,16 @@ pub struct AppLayout {
 }
 
 impl AppLayout {
-    pub fn new(_area: Rect) -> Self {
+    pub fn new(area: Rect) -> Self {
+        let chunks = Layout::horizontal([
+            Constraint::Percentage(50),
+            Constraint::Percentage(50),
+        ])
+        .split(area);
+
         Self {
-            request_area: Rect::default(),
-            response_area: Rect::default(),
+            request_area: chunks[0],
+            response_area: chunks[1],
         }
     }
 }
