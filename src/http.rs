@@ -28,6 +28,8 @@ pub async fn send_request(
         }
         if let Some((key, value)) = line.split_once(':') {
             builder = builder.header(key.trim(), value.trim());
+        } else {
+            return Err(format!("Invalid header format: '{}' (expected 'Key: Value')", line));
         }
     }
 
@@ -74,7 +76,17 @@ fn format_request_error(err: reqwest::Error) -> String {
         return "Connection failed".to_string();
     }
     if err.is_builder() {
-        return format!("Invalid URL: {}", err);
+        let msg = err.to_string();
+        if msg.contains("relative URL without a base") {
+            return "Invalid URL: missing scheme (try https://)".to_string();
+        }
+        return format!("Invalid URL: {}", msg);
+    }
+    if err.is_redirect() {
+        return "Too many redirects".to_string();
+    }
+    if err.is_decode() {
+        return "Failed to decode response body".to_string();
     }
     format!("Request failed: {}", err)
 }
