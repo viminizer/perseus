@@ -159,6 +159,105 @@ fn render_response_content(
     frame.render_widget(headers_widget, layout.headers_area);
 
     let body_block = Block::default().borders(Borders::ALL).title("Body");
-    let body_widget = Paragraph::new(data.body.as_str()).block(body_block);
+    let is_json = is_json_response(&data.headers, &data.body);
+    let body_lines = if is_json {
+        colorize_json(&data.body)
+    } else {
+        data.body.lines().map(|l| Line::from(l.to_string())).collect()
+    };
+    let body_widget = Paragraph::new(body_lines).block(body_block);
     frame.render_widget(body_widget, layout.body_area);
+}
+
+fn is_json_response(headers: &[(String, String)], body: &str) -> bool {
+    let has_json_content_type = headers.iter().any(|(k, v)| {
+        k.eq_ignore_ascii_case("content-type") && v.contains("application/json")
+    });
+    if has_json_content_type {
+        return true;
+    }
+    let trimmed = body.trim();
+    (trimmed.starts_with('{') && trimmed.ends_with('}'))
+        || (trimmed.starts_with('[') && trimmed.ends_with(']'))
+}
+
+fn colorize_json(json: &str) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    let mut current_spans: Vec<Span<'static>> = Vec::new();
+
+    let mut chars = json.chars().peekable();
+    let mut in_string = false;
+    let mut is_key = false;
+    let mut current_token = String::new();
+
+    while let Some(c) = chars.next() {
+        match c {
+            '"' if !in_string => {
+                in_string = true;
+                is_key = current_spans.is_empty()
+                    || current_spans
+                        .last()
+                        .is_some_and(|s| s.content.ends_with(['{', ',', '\n']));
+                current_token.push(c);
+            }
+            '"' if in_string => {
+                current_token.push(c);
+                let color = if is_key { Color::Cyan } else { Color::Green };
+                current_spans.push(Span::styled(
+                    std::mem::take(&mut current_token),
+                    Style::default().fg(color),
+                ));
+                in_string = false;
+            }
+            '\n' => {
+                if !current_token.is_empty() {
+                    current_spans.push(Span::raw(std::mem::take(&mut current_token)));
+                }
+                lines.push(Line::from(std::mem::take(&mut current_spans)));
+            }
+            _ if in_string => {
+                current_token.push(c);
+            }
+            ':' | ',' | '{' | '}' | '[' | ']' => {
+                if !current_token.is_empty() {
+                    let span = colorize_token(&current_token);
+                    current_spans.push(span);
+                    current_token.clear();
+                }
+                current_spans.push(Span::raw(c.to_string()));
+            }
+            c if c.is_whitespace() => {
+                if !current_token.is_empty() {
+                    let span = colorize_token(&current_token);
+                    current_spans.push(span);
+                    current_token.clear();
+                }
+                current_spans.push(Span::raw(c.to_string()));
+            }
+            _ => {
+                current_token.push(c);
+            }
+        }
+    }
+
+    if !current_token.is_empty() {
+        let span = colorize_token(&current_token);
+        current_spans.push(span);
+    }
+    if !current_spans.is_empty() {
+        lines.push(Line::from(current_spans));
+    }
+
+    lines
+}
+
+fn colorize_token(token: &str) -> Span<'static> {
+    let trimmed = token.trim();
+    if trimmed == "true" || trimmed == "false" || trimmed == "null" {
+        Span::styled(token.to_string(), Style::default().fg(Color::Magenta))
+    } else if trimmed.parse::<f64>().is_ok() {
+        Span::styled(token.to_string(), Style::default().fg(Color::Yellow))
+    } else {
+        Span::raw(token.to_string())
+    }
 }
