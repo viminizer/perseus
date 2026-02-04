@@ -10,7 +10,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, Panel, RequestField, ResponseStatus};
+use crate::app::{App, InputMode, Panel, RequestField, ResponseStatus};
 
 pub fn render(frame: &mut Frame, app: &App) {
     let layout = AppLayout::new(frame.area());
@@ -18,6 +18,7 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     render_request_panel(frame, app, &request_layout);
     render_response_panel(frame, app, layout.response_area);
+    render_status_bar(frame, app, layout.status_bar);
 }
 
 fn is_field_focused(app: &App, field: RequestField) -> bool {
@@ -263,4 +264,41 @@ fn colorize_token(token: &str) -> Span<'static> {
     } else {
         Span::raw(token.to_string())
     }
+}
+
+fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
+    let (mode_text, mode_color) = match app.input_mode {
+        InputMode::Normal => ("[NORMAL]", Color::Cyan),
+        InputMode::Insert => ("[INSERT]", Color::Yellow),
+    };
+
+    let panel_info = match app.focus.panel {
+        Panel::Request => {
+            let field = match app.focus.request_field {
+                RequestField::Method => "Method",
+                RequestField::Url => "URL",
+                RequestField::Headers => "Headers",
+                RequestField::Body => "Body",
+            };
+            format!("Request > {}", field)
+        }
+        Panel::Response => "Response".to_string(),
+    };
+
+    let hints = match app.input_mode {
+        InputMode::Normal => "i:insert  j/k:nav  Tab:panel  Enter:send  q:quit",
+        InputMode::Insert => "Esc:normal  Enter:newline",
+    };
+
+    let status_line = Line::from(vec![
+        Span::styled(mode_text, Style::default().fg(mode_color)),
+        Span::raw("  "),
+        Span::raw(panel_info),
+        Span::raw("  │  "),
+        Span::styled(hints, Style::default().fg(Color::DarkGray)),
+    ]);
+
+    let status_bar = Paragraph::new(status_line)
+        .style(Style::default().bg(Color::DarkGray).fg(Color::White));
+    frame.render_widget(status_bar, area);
 }
