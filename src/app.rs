@@ -197,6 +197,13 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent, tx: mpsc::Sender<Result<ResponseData, String>>) {
+        match self.input_mode {
+            InputMode::Normal => self.handle_normal_mode(key, tx),
+            InputMode::Insert => self.handle_insert_mode(key),
+        }
+    }
+
+    fn handle_normal_mode(&mut self, key: KeyEvent, tx: mpsc::Sender<Result<ResponseData, String>>) {
         let in_request_panel = self.focus.panel == Panel::Request;
         let in_method_field = self.focus.request_field == RequestField::Method;
 
@@ -214,21 +221,12 @@ impl App {
             }
         }
 
-        if in_request_panel && self.is_editable_field() {
-            match key.code {
-                KeyCode::Char(c) => {
-                    self.insert_char(c);
-                    return;
-                }
-                KeyCode::Backspace => {
-                    self.delete_char();
-                    return;
-                }
-                _ => {}
-            }
-        }
-
         match key.code {
+            KeyCode::Char('i') => {
+                if in_request_panel && self.is_editable_field() {
+                    self.input_mode = InputMode::Insert;
+                }
+            }
             KeyCode::Enter => {
                 if in_request_panel {
                     self.send_request(tx);
@@ -238,6 +236,32 @@ impl App {
             KeyCode::Up | KeyCode::Char('k') => self.prev_field(),
             KeyCode::Down | KeyCode::Char('j') => self.next_field(),
             KeyCode::Char('q') | KeyCode::Esc => self.running = false,
+            _ => {}
+        }
+    }
+
+    fn handle_insert_mode(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.input_mode = InputMode::Normal;
+            }
+            KeyCode::Enter => {
+                match self.focus.request_field {
+                    RequestField::Url => {
+                        self.input_mode = InputMode::Normal;
+                    }
+                    RequestField::Headers | RequestField::Body => {
+                        self.insert_char('\n');
+                    }
+                    RequestField::Method => {}
+                }
+            }
+            KeyCode::Char(c) => {
+                self.insert_char(c);
+            }
+            KeyCode::Backspace => {
+                self.delete_char();
+            }
             _ => {}
         }
     }
