@@ -11,13 +11,47 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 
 use crate::ui;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HttpMethod {
+    #[default]
+    Get,
+    Post,
+    Put,
+    Patch,
+    Delete,
+}
+
+impl HttpMethod {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            HttpMethod::Get => "GET",
+            HttpMethod::Post => "POST",
+            HttpMethod::Put => "PUT",
+            HttpMethod::Patch => "PATCH",
+            HttpMethod::Delete => "DELETE",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RequestState {
+    pub url: String,
+    pub method: HttpMethod,
+    pub headers: String,
+    pub body: String,
+}
+
 pub struct App {
     running: bool,
+    pub request: RequestState,
 }
 
 impl App {
     pub fn new() -> Self {
-        Self { running: true }
+        Self {
+            running: true,
+            request: RequestState::default(),
+        }
     }
 
     pub async fn run(&mut self) -> Result<()> {

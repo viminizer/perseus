@@ -19,3 +19,29 @@ impl AppLayout {
         }
     }
 }
+
+pub struct RequestLayout {
+    pub method_area: Rect,
+    pub url_area: Rect,
+    pub headers_area: Rect,
+    pub body_area: Rect,
+}
+
+impl RequestLayout {
+    pub fn new(area: Rect) -> Self {
+        let chunks = Layout::vertical([
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Percentage(30),
+            Constraint::Min(3),
+        ])
+        .split(area);
+
+        Self {
+            method_area: chunks[0],
+            url_area: chunks[1],
+            headers_area: chunks[2],
+            body_area: chunks[3],
+        }
+    }
+}
