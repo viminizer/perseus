@@ -41,9 +41,32 @@ pub struct RequestState {
     pub body: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Panel {
+    #[default]
+    Request,
+    Response,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RequestField {
+    Method,
+    #[default]
+    Url,
+    Headers,
+    Body,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FocusState {
+    pub panel: Panel,
+    pub request_field: RequestField,
+}
+
 pub struct App {
     running: bool,
     pub request: RequestState,
+    pub focus: FocusState,
 }
 
 impl App {
@@ -51,6 +74,7 @@ impl App {
         Self {
             running: true,
             request: RequestState::default(),
+            focus: FocusState::default(),
         }
     }
 
