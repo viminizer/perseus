@@ -118,6 +118,7 @@ pub struct App {
     pub response: ResponseStatus,
     pub client: Client,
     pub input_mode: InputMode,
+    pub response_scroll: u16,
 }
 
 impl App {
@@ -134,6 +135,7 @@ impl App {
             response: ResponseStatus::Empty,
             client,
             input_mode: InputMode::Normal,
+            response_scroll: 0,
         }
     }
 
@@ -182,6 +184,7 @@ impl App {
                     Ok(data) => ResponseStatus::Success(data),
                     Err(e) => ResponseStatus::Error(e),
                 };
+                self.response_scroll = 0;
             }
 
             if event::poll(std::time::Duration::from_millis(50))? {
@@ -205,6 +208,7 @@ impl App {
 
     fn handle_normal_mode(&mut self, key: KeyEvent, tx: mpsc::Sender<Result<ResponseData, String>>) {
         let in_request_panel = self.focus.panel == Panel::Request;
+        let in_response_panel = self.focus.panel == Panel::Response;
         let in_method_field = self.focus.request_field == RequestField::Method;
 
         if in_request_panel && in_method_field {
@@ -215,6 +219,20 @@ impl App {
                 }
                 KeyCode::Right | KeyCode::Char('l') => {
                     self.request.method = self.request.method.next();
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        if in_response_panel {
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.response_scroll = self.response_scroll.saturating_sub(1);
+                    return;
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.response_scroll = self.response_scroll.saturating_add(1);
                     return;
                 }
                 _ => {}
