@@ -31,6 +31,26 @@ impl HttpMethod {
             HttpMethod::Delete => "DELETE",
         }
     }
+
+    fn next(&self) -> Self {
+        match self {
+            HttpMethod::Get => HttpMethod::Post,
+            HttpMethod::Post => HttpMethod::Put,
+            HttpMethod::Put => HttpMethod::Patch,
+            HttpMethod::Patch => HttpMethod::Delete,
+            HttpMethod::Delete => HttpMethod::Get,
+        }
+    }
+
+    fn prev(&self) -> Self {
+        match self {
+            HttpMethod::Get => HttpMethod::Delete,
+            HttpMethod::Post => HttpMethod::Get,
+            HttpMethod::Put => HttpMethod::Post,
+            HttpMethod::Patch => HttpMethod::Put,
+            HttpMethod::Delete => HttpMethod::Patch,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -39,6 +59,7 @@ pub struct RequestState {
     pub method: HttpMethod,
     pub headers: String,
     pub body: String,
+    pub url_cursor: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -130,12 +151,84 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        let in_request_panel = self.focus.panel == Panel::Request;
+        let in_method_field = self.focus.request_field == RequestField::Method;
+
+        if in_request_panel && in_method_field {
+            match key.code {
+                KeyCode::Left | KeyCode::Char('h') => {
+                    self.request.method = self.request.method.prev();
+                    return;
+                }
+                KeyCode::Right | KeyCode::Char('l') => {
+                    self.request.method = self.request.method.next();
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        if in_request_panel && self.is_editable_field() {
+            match key.code {
+                KeyCode::Char(c) => {
+                    self.insert_char(c);
+                    return;
+                }
+                KeyCode::Backspace => {
+                    self.delete_char();
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         match key.code {
             KeyCode::Tab => self.cycle_panel(),
             KeyCode::Up | KeyCode::Char('k') => self.prev_field(),
             KeyCode::Down | KeyCode::Char('j') => self.next_field(),
             KeyCode::Char('q') | KeyCode::Esc => self.running = false,
             _ => {}
+        }
+    }
+
+    fn is_editable_field(&self) -> bool {
+        matches!(
+            self.focus.request_field,
+            RequestField::Url | RequestField::Headers | RequestField::Body
+        )
+    }
+
+    fn insert_char(&mut self, c: char) {
+        match self.focus.request_field {
+            RequestField::Url => {
+                self.request.url.insert(self.request.url_cursor, c);
+                self.request.url_cursor += 1;
+            }
+            RequestField::Headers => {
+                self.request.headers.push(c);
+            }
+            RequestField::Body => {
+                self.request.body.push(c);
+            }
+            RequestField::Method => {}
+        }
+    }
+
+    fn delete_char(&mut self) {
+        match self.focus.request_field {
+            RequestField::Url => {
+                if self.request.url_cursor > 0 {
+                    self.request.url_cursor -= 1;
+                    self.request.url.remove(self.request.url_cursor);
+                }
+            }
+            RequestField::Headers => {
+                self.request.headers.pop();
+            }
+            RequestField::Body => {
+                self.request.body.pop();
+            }
+            RequestField::Method => {}
         }
     }
 

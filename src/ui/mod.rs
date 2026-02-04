@@ -51,6 +51,12 @@ fn render_request_panel(frame: &mut Frame, app: &App, layout: &RequestLayout) {
         .block(url_block);
     frame.render_widget(url_text, layout.url_area);
 
+    if is_field_focused(app, RequestField::Url) {
+        let cursor_x = layout.url_area.x + 1 + app.request.url_cursor as u16;
+        let cursor_y = layout.url_area.y + 1;
+        frame.set_cursor_position((cursor_x, cursor_y));
+    }
+
     let headers_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(field_border_color(app, RequestField::Headers)))
