@@ -109,7 +109,7 @@ fn render_response_panel(frame: &mut Frame, app: &App, area: Rect) {
         }
         ResponseStatus::Success(data) => {
             let response_layout = ResponseLayout::new(inner_area);
-            render_response_content(frame, data, &response_layout);
+            render_response_content(frame, data, &response_layout, app.response_scroll);
         }
     }
 }
@@ -118,6 +118,7 @@ fn render_response_content(
     frame: &mut Frame,
     data: &crate::app::ResponseData,
     layout: &ResponseLayout,
+    scroll_offset: u16,
 ) {
     let status_color = if data.status >= 200 && data.status < 300 {
         Color::Green
@@ -165,7 +166,9 @@ fn render_response_content(
     } else {
         data.body.lines().map(|l| Line::from(l.to_string())).collect()
     };
-    let body_widget = Paragraph::new(body_lines).block(body_block);
+    let body_widget = Paragraph::new(body_lines)
+        .block(body_block)
+        .scroll((scroll_offset, 0));
     frame.render_widget(body_widget, layout.body_area);
 }
 
