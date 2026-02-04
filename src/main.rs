@@ -1,4 +1,5 @@
 mod app;
+mod http;
 mod ui;
 
 use anyhow::Result;

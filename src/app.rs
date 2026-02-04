@@ -8,6 +8,7 @@ use crossterm::{
     ExecutableCommand,
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
+use reqwest::Client;
 
 use crate::ui;
 
@@ -107,15 +108,22 @@ pub struct App {
     pub request: RequestState,
     pub focus: FocusState,
     pub response: ResponseStatus,
+    pub client: Client,
 }
 
 impl App {
     pub fn new() -> Self {
+        let client = Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .expect("Failed to create HTTP client");
+
         Self {
             running: true,
             request: RequestState::default(),
             focus: FocusState::default(),
             response: ResponseStatus::Empty,
+            client,
         }
     }
 

@@ -1,0 +1,80 @@
+use std::time::Instant;
+
+use reqwest::Client;
+
+use crate::app::{HttpMethod, ResponseData};
+
+pub async fn send_request(
+    client: &Client,
+    method: HttpMethod,
+    url: &str,
+    headers: &str,
+    body: &str,
+) -> Result<ResponseData, String> {
+    let start = Instant::now();
+
+    let mut builder = match method {
+        HttpMethod::Get => client.get(url),
+        HttpMethod::Post => client.post(url),
+        HttpMethod::Put => client.put(url),
+        HttpMethod::Patch => client.patch(url),
+        HttpMethod::Delete => client.delete(url),
+    };
+
+    for line in headers.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once(':') {
+            builder = builder.header(key.trim(), value.trim());
+        }
+    }
+
+    if !body.is_empty() && matches!(method, HttpMethod::Post | HttpMethod::Put | HttpMethod::Patch)
+    {
+        builder = builder.body(body.to_string());
+    }
+
+    let response = builder.send().await.map_err(format_request_error)?;
+
+    let status = response.status();
+    let status_code = status.as_u16();
+    let status_text = status.canonical_reason().unwrap_or("").to_string();
+
+    let response_headers: Vec<(String, String)> = response
+        .headers()
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+        .collect();
+
+    let response_body = response.text().await.map_err(|e| e.to_string())?;
+
+    let duration_ms = start.elapsed().as_millis() as u64;
+
+    Ok(ResponseData {
+        status: status_code,
+        status_text,
+        headers: response_headers,
+        body: response_body,
+        duration_ms,
+    })
+}
+
+fn format_request_error(err: reqwest::Error) -> String {
+    if err.is_timeout() {
+        return "Request timed out".to_string();
+    }
+    if err.is_connect() {
+        if let Some(url) = err.url() {
+            if let Some(host) = url.host_str() {
+                return format!("Connection failed: {}", host);
+            }
+        }
+        return "Connection failed".to_string();
+    }
+    if err.is_builder() {
+        return format!("Invalid URL: {}", err);
+    }
+    format!("Request failed: {}", err)
+}
