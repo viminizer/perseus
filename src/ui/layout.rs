@@ -3,19 +3,30 @@ use ratatui::layout::{Constraint, Layout, Rect};
 pub struct AppLayout {
     pub request_area: Rect,
     pub response_area: Rect,
+    pub status_bar: Rect,
 }
 
 impl AppLayout {
     pub fn new(area: Rect) -> Self {
-        let chunks = Layout::horizontal([
-            Constraint::Percentage(50),
-            Constraint::Percentage(50),
+        let vertical = Layout::vertical([
+            Constraint::Min(1),
+            Constraint::Length(1),
         ])
         .split(area);
 
+        let main_area = vertical[0];
+        let status_bar = vertical[1];
+
+        let horizontal = Layout::horizontal([
+            Constraint::Percentage(50),
+            Constraint::Percentage(50),
+        ])
+        .split(main_area);
+
         Self {
-            request_area: chunks[0],
-            response_area: chunks[1],
+            request_area: horizontal[0],
+            response_area: horizontal[1],
+            status_bar,
         }
     }
 }
