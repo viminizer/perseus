@@ -9,8 +9,9 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 use reqwest::Client;
+use tokio::sync::mpsc;
 
-use crate::ui;
+use crate::{http, ui};
 
 #[derive(Debug, Clone, Default)]
 pub enum ResponseStatus {
@@ -160,16 +161,24 @@ impl App {
 
     async fn event_loop(&mut self) -> Result<()> {
         let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
+        let (tx, mut rx) = mpsc::channel::<Result<ResponseData, String>>(1);
 
         while self.running {
             terminal.draw(|frame| {
                 ui::render(frame, self);
             })?;
 
-            if event::poll(std::time::Duration::from_millis(100))? {
+            if let Ok(result) = rx.try_recv() {
+                self.response = match result {
+                    Ok(data) => ResponseStatus::Success(data),
+                    Err(e) => ResponseStatus::Error(e),
+                };
+            }
+
+            if event::poll(std::time::Duration::from_millis(50))? {
                 if let Event::Key(key) = event::read()? {
                     if key.kind == KeyEventKind::Press {
-                        self.handle_key(key);
+                        self.handle_key(key, tx.clone());
                     }
                 }
             }
@@ -178,7 +187,7 @@ impl App {
         Ok(())
     }
 
-    fn handle_key(&mut self, key: KeyEvent) {
+    fn handle_key(&mut self, key: KeyEvent, tx: mpsc::Sender<Result<ResponseData, String>>) {
         let in_request_panel = self.focus.panel == Panel::Request;
         let in_method_field = self.focus.request_field == RequestField::Method;
 
@@ -211,12 +220,41 @@ impl App {
         }
 
         match key.code {
+            KeyCode::Enter => {
+                if in_request_panel {
+                    self.send_request(tx);
+                }
+            }
             KeyCode::Tab => self.cycle_panel(),
             KeyCode::Up | KeyCode::Char('k') => self.prev_field(),
             KeyCode::Down | KeyCode::Char('j') => self.next_field(),
             KeyCode::Char('q') | KeyCode::Esc => self.running = false,
             _ => {}
         }
+    }
+
+    fn send_request(&mut self, tx: mpsc::Sender<Result<ResponseData, String>>) {
+        if self.request.url.is_empty() {
+            self.response = ResponseStatus::Error("URL is required".to_string());
+            return;
+        }
+
+        if matches!(self.response, ResponseStatus::Loading) {
+            return;
+        }
+
+        self.response = ResponseStatus::Loading;
+
+        let client = self.client.clone();
+        let method = self.request.method;
+        let url = self.request.url.clone();
+        let headers = self.request.headers.clone();
+        let body = self.request.body.clone();
+
+        tokio::spawn(async move {
+            let result = http::send_request(&client, method, &url, &headers, &body).await;
+            let _ = tx.send(result).await;
+        });
     }
 
     fn is_editable_field(&self) -> bool {
