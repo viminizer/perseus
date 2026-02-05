@@ -2,30 +2,24 @@
 
 ## Current Position
 
-**Milestone:** v1.0 — Core HTTP Client
-**Phase:** 4 (Polish)
-**Status:** Complete
+**Milestone:** v1.1 — Collections & Workspaces
+**Phase:** 5 (UI Improvements)
+**Status:** Pending
 
 ## Progress
 
 | Phase | Name | Status |
 |-------|------|--------|
-| 1 | Foundation | Complete |
-| 2 | TUI Layout | Complete |
-| 3 | HTTP Integration | Complete |
-| 4 | Polish | Complete |
+| 5 | UI Improvements | Pending |
+| 6 | Persistence | Pending |
+| 7 | Collections | Pending |
+| 8 | Workspaces | Pending |
 
 ## Recent Activity
 
+- 2026-02-05: v1.1 milestone created
+- 2026-02-04: v1.0 milestone archived
 - 2026-02-04: Phase 4 Polish complete (Plan 4-1)
-- 2026-02-04: Phase 4 Polish planned (Plan 4-1)
-- 2026-02-04: Phase 3 HTTP Integration complete (Plan 3-1)
-- 2026-02-04: Phase 3 HTTP Integration planned (Plan 3-1)
-- 2026-02-04: Phase 2 TUI Layout complete (Plan 2-1)
-- 2026-02-04: Phase 2 TUI Layout planned (Plan 2-1)
-- 2026-02-04: Phase 1 Foundation complete (Plan 1-1)
-- 2026-02-04: Roadmap created
-- 2026-02-04: Project initialized
 
 ## Blockers
 
@@ -34,7 +28,7 @@ None
 ## Notes
 
 - Mode: yolo, Depth: quick
-- v1.0 milestone complete
+- v1.0 shipped, starting v1.1
 
 ---
-*Last updated: 2026-02-04*
+*Last updated: 2026-02-05*
