@@ -18,8 +18,8 @@ impl AppLayout {
         let status_bar = vertical[1];
 
         let horizontal = Layout::horizontal([
-            Constraint::Percentage(50),
-            Constraint::Percentage(50),
+            Constraint::Percentage(45),
+            Constraint::Percentage(55),
         ])
         .split(main_area);
 
@@ -43,8 +43,8 @@ impl RequestLayout {
         let chunks = Layout::vertical([
             Constraint::Length(3),
             Constraint::Length(3),
-            Constraint::Percentage(30),
-            Constraint::Min(3),
+            Constraint::Length(5),
+            Constraint::Min(5),
         ])
         .split(area);
 
