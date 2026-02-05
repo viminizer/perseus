@@ -6,7 +6,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };
 
@@ -106,9 +106,21 @@ fn render_response_panel(frame: &mut Frame, app: &App, area: Rect) {
             frame.render_widget(loading, inner_area);
         }
         ResponseStatus::Error(msg) => {
-            let error = Paragraph::new(msg.as_str())
-                .style(Style::default().fg(Color::Red));
-            frame.render_widget(error, inner_area);
+            let error_block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Red))
+                .title("Error");
+            let error_inner = error_block.inner(inner_area);
+            frame.render_widget(error_block, inner_area);
+
+            let error_lines = vec![Line::from(vec![
+                Span::styled("✗ ", Style::default().fg(Color::Red)),
+                Span::raw(msg.as_str()),
+            ])];
+            let error_text = Paragraph::new(error_lines)
+                .style(Style::default().fg(Color::Red))
+                .wrap(Wrap { trim: true });
+            frame.render_widget(error_text, error_inner);
         }
         ResponseStatus::Success(data) => {
             let response_layout = ResponseLayout::new(inner_area);
