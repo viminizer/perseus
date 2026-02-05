@@ -120,6 +120,7 @@ pub struct App {
     pub input_mode: InputMode,
     pub response_scroll: u16,
     pub loading_tick: u8,
+    pub show_help: bool,
 }
 
 impl App {
@@ -138,6 +139,7 @@ impl App {
             input_mode: InputMode::Normal,
             response_scroll: 0,
             loading_tick: 0,
+            show_help: false,
         }
     }
 
@@ -246,6 +248,9 @@ impl App {
         }
 
         match key.code {
+            KeyCode::Char('?') => {
+                self.show_help = !self.show_help;
+            }
             KeyCode::Char('i') => {
                 if in_request_panel && self.is_editable_field() {
                     self.input_mode = InputMode::Insert;
