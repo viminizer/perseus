@@ -17,6 +17,7 @@
 
 ## Recent Activity
 
+- 2026-02-05: Phase 5 UI Improvements planned (Plan 5-1)
 - 2026-02-05: v1.1 milestone created
 - 2026-02-04: v1.0 milestone archived
 - 2026-02-04: Phase 4 Polish complete (Plan 4-1)
