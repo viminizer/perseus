@@ -6,16 +6,15 @@
 
 ## Current Milestone: v1.1 — Collections & Workspaces
 
-### Phase 5: UI Improvements
+### Phase 5: UI Improvements ✓
 **Goal:** Better layouts, error display, visual polish
 
-- Improve error message display and styling
-- Add loading spinners/progress indicators
-- Refine panel proportions and spacing
-- Add help overlay (? key)
-- Visual feedback for user actions
+- [x] Improve error message display and styling
+- [x] Add loading spinners/progress indicators
+- [x] Refine panel proportions and spacing
+- [x] Add help overlay (? key)
 
-**Research:** None
+**Plans:** 1 completed
 
 ---
 
@@ -60,12 +59,12 @@
 
 ## Summary
 
-| Phase | Name | Goal |
-|-------|------|------|
-| 5 | UI Improvements | Better layouts, error display, polish |
-| 6 | Persistence | File-based storage layer |
-| 7 | Collections | Save/load/manage requests |
-| 8 | Workspaces | Organize collections, import/export |
+| Phase | Name | Status |
+|-------|------|--------|
+| 5 | UI Improvements | Complete |
+| 6 | Persistence | Pending |
+| 7 | Collections | Pending |
+| 8 | Workspaces | Pending |
 
 ---
 *Last updated: 2026-02-05*
