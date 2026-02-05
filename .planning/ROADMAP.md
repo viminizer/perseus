@@ -18,16 +18,16 @@
 
 ---
 
-### Phase 6: Persistence
+### Phase 6: Persistence ✓
 **Goal:** File-based storage for requests and collections
 
-- Design storage format (JSON)
-- Create storage module with read/write operations
-- Define data models for saved requests
-- Handle file errors gracefully
-- Storage location (~/.perseus/ or configurable)
+- [x] Design storage format (JSON)
+- [x] Create storage module with read/write operations
+- [x] Define data models for saved requests
+- [x] Handle file errors gracefully
+- [x] Storage location (project-local: `<project>/.perseus/requests/`)
 
-**Research:** None
+**Plans:** 1 completed
 
 ---
 
@@ -62,7 +62,7 @@
 | Phase | Name | Status |
 |-------|------|--------|
 | 5 | UI Improvements | Complete |
-| 6 | Persistence | Pending |
+| 6 | Persistence | Complete |
 | 7 | Collections | Pending |
 | 8 | Workspaces | Pending |
 
