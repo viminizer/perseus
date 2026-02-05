@@ -119,6 +119,7 @@ pub struct App {
     pub client: Client,
     pub input_mode: InputMode,
     pub response_scroll: u16,
+    pub loading_tick: u8,
 }
 
 impl App {
@@ -136,6 +137,7 @@ impl App {
             client,
             input_mode: InputMode::Normal,
             response_scroll: 0,
+            loading_tick: 0,
         }
     }
 
@@ -185,6 +187,10 @@ impl App {
                     Err(e) => ResponseStatus::Error(e),
                 };
                 self.response_scroll = 0;
+            }
+
+            if matches!(self.response, ResponseStatus::Loading) {
+                self.loading_tick = self.loading_tick.wrapping_add(1);
             }
 
             if event::poll(std::time::Duration::from_millis(50))? {
