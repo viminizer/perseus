@@ -99,7 +99,9 @@ fn render_response_panel(frame: &mut Frame, app: &App, area: Rect) {
             frame.render_widget(hint, inner_area);
         }
         ResponseStatus::Loading => {
-            let loading = Paragraph::new("Loading...")
+            let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+            let frame_idx = (app.loading_tick as usize / 4) % spinner_frames.len();
+            let loading = Paragraph::new(format!("{} Sending request...", spinner_frames[frame_idx]))
                 .style(Style::default().fg(Color::Yellow));
             frame.render_widget(loading, inner_area);
         }
