@@ -6,7 +6,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
     Frame,
 };
 
@@ -19,6 +19,10 @@ pub fn render(frame: &mut Frame, app: &App) {
     render_request_panel(frame, app, &request_layout);
     render_response_panel(frame, app, layout.response_area);
     render_status_bar(frame, app, layout.status_bar);
+
+    if app.show_help {
+        render_help_overlay(frame);
+    }
 }
 
 fn is_field_focused(app: &App, field: RequestField) -> bool {
@@ -315,4 +319,46 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let status_bar = Paragraph::new(status_line)
         .style(Style::default().bg(Color::DarkGray).fg(Color::White));
     frame.render_widget(status_bar, area);
+}
+
+fn render_help_overlay(frame: &mut Frame) {
+    let area = frame.area();
+
+    let width = (area.width as f32 * 0.6) as u16;
+    let height = (area.height as f32 * 0.7) as u16;
+    let x = (area.width - width) / 2;
+    let y = (area.height - height) / 2;
+    let help_area = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, help_area);
+
+    let help_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(" Help (press ? to close) ");
+
+    let help_inner = help_block.inner(help_area);
+    frame.render_widget(help_block, help_area);
+
+    let help_text = vec![
+        Line::from(Span::styled(
+            "Navigation",
+            Style::default().fg(Color::Yellow),
+        )),
+        Line::from("  j/k or ↑/↓  Move between fields"),
+        Line::from("  h/l or ←/→  Cycle HTTP method"),
+        Line::from("  Tab         Switch panel"),
+        Line::from(""),
+        Line::from(Span::styled("Modes", Style::default().fg(Color::Yellow))),
+        Line::from("  i           Enter insert mode"),
+        Line::from("  Esc         Return to normal mode"),
+        Line::from(""),
+        Line::from(Span::styled("Actions", Style::default().fg(Color::Yellow))),
+        Line::from("  Enter       Send request"),
+        Line::from("  ?           Toggle this help"),
+        Line::from("  q           Quit"),
+    ];
+
+    let help_paragraph = Paragraph::new(help_text);
+    frame.render_widget(help_paragraph, help_inner);
 }
