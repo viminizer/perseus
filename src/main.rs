@@ -1,5 +1,6 @@
 mod app;
 mod http;
+mod storage;
 mod ui;
 
 use anyhow::Result;
