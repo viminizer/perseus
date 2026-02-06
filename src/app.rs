@@ -468,42 +468,25 @@ impl App {
             }
         }
 
-        // Response panel scrolling with j/k
-        if in_response {
-            match key.code {
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.response_scroll = self.response_scroll.saturating_sub(1);
-                    return;
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.response_scroll = self.response_scroll.saturating_add(1);
-                    return;
-                }
-                _ => {}
+        // Arrow keys + bare hjkl for navigation
+        match key.code {
+            KeyCode::Left | KeyCode::Char('h') => {
+                self.prev_horizontal();
+                return;
             }
-        }
-
-        // Arrow keys + bare hjkl for navigation in Request panel
-        if in_request {
-            match key.code {
-                KeyCode::Left | KeyCode::Char('h') => {
-                    self.prev_horizontal();
-                    return;
-                }
-                KeyCode::Right | KeyCode::Char('l') => {
-                    self.next_horizontal();
-                    return;
-                }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.prev_vertical();
-                    return;
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.next_vertical();
-                    return;
-                }
-                _ => {}
+            KeyCode::Right | KeyCode::Char('l') => {
+                self.next_horizontal();
+                return;
             }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.prev_vertical();
+                return;
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.next_vertical();
+                return;
+            }
+            _ => {}
         }
 
         match key.code {
@@ -545,7 +528,6 @@ impl App {
                     self.enter_editing(VimMode::Normal);
                 }
             }
-            KeyCode::Tab => self.cycle_panel(),
             KeyCode::Char('q') => self.running = false,
             _ => {}
         }
@@ -675,14 +657,6 @@ impl App {
         )
     }
 
-    fn cycle_panel(&mut self) {
-        self.focus.panel = match self.focus.panel {
-            Panel::Sidebar => Panel::Request,
-            Panel::Request => Panel::Response,
-            Panel::Response => Panel::Request,
-        };
-    }
-
     fn next_horizontal(&mut self) {
         if self.focus.panel != Panel::Request {
             return;
@@ -709,24 +683,39 @@ impl App {
     }
 
     fn next_vertical(&mut self) {
-        if self.focus.panel != Panel::Request {
-            return;
+        match self.focus.panel {
+            Panel::Request => {
+                self.focus.request_field = match self.focus.request_field {
+                    RequestField::Method | RequestField::Url | RequestField::Send => {
+                        RequestField::Headers
+                    }
+                    RequestField::Headers => RequestField::Body,
+                    RequestField::Body => {
+                        self.focus.panel = Panel::Response;
+                        return;
+                    }
+                };
+            }
+            Panel::Response | Panel::Sidebar => {}
         }
-        self.focus.request_field = match self.focus.request_field {
-            RequestField::Method | RequestField::Url | RequestField::Send => RequestField::Headers,
-            RequestField::Headers => RequestField::Body,
-            RequestField::Body => RequestField::Url,
-        };
     }
 
     fn prev_vertical(&mut self) {
-        if self.focus.panel != Panel::Request {
-            return;
+        match self.focus.panel {
+            Panel::Response => {
+                self.focus.panel = Panel::Request;
+                self.focus.request_field = RequestField::Body;
+            }
+            Panel::Request => {
+                self.focus.request_field = match self.focus.request_field {
+                    RequestField::Method | RequestField::Url | RequestField::Send => {
+                        RequestField::Body
+                    }
+                    RequestField::Headers => RequestField::Url,
+                    RequestField::Body => RequestField::Headers,
+                };
+            }
+            Panel::Sidebar => {}
         }
-        self.focus.request_field = match self.focus.request_field {
-            RequestField::Method | RequestField::Url | RequestField::Send => RequestField::Body,
-            RequestField::Headers => RequestField::Url,
-            RequestField::Body => RequestField::Headers,
-        };
     }
 }

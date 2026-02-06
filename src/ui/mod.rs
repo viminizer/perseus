@@ -421,9 +421,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let hints = match app.app_mode {
-        AppMode::Navigation => {
-            "Ctrl+hjkl:nav  Tab:panel  Enter:edit  i:insert  Ctrl+r:send  ?:help  q:quit"
-        }
+        AppMode::Navigation => "hjkl:nav  Enter:edit  i:insert  Ctrl+r:send  ?:help  q:quit",
         AppMode::Editing => match app.vim.mode {
             VimMode::Normal => "hjkl:move  w/b/e:word  i/a:insert  v:visual  d/c/y:op  Esc:exit",
             VimMode::Insert => "type text  Esc:normal",
@@ -469,15 +467,12 @@ fn render_help_overlay(frame: &mut Frame) {
             "Navigation Mode",
             Style::default().fg(Color::Yellow),
         )),
-        Line::from("  Ctrl+h/l    Move between fields horizontally"),
-        Line::from("  Ctrl+j/k    Move between field rows"),
-        Line::from("  Arrow keys  Same as Ctrl+hjkl"),
-        Line::from("  Tab         Switch panel (Request/Response)"),
+        Line::from("  h/j/k/l     Move focus across UI"),
+        Line::from("  Arrow keys  Same as h/j/k/l"),
         Line::from("  Enter       Activate field (vim normal mode)"),
         Line::from("  i           Enter field (vim insert mode)"),
         Line::from("  Ctrl+r      Send request"),
         Line::from("  Ctrl+e      Toggle sidebar"),
-        Line::from("  j/k         Scroll response (in Response panel)"),
         Line::from("  q / Esc     Quit"),
         Line::from(""),
         Line::from(Span::styled(
