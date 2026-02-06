@@ -45,7 +45,7 @@ fn render_request_panel(frame: &mut Frame, app: &App, layout: &RequestLayout) {
     let method_text = Paragraph::new(Line::from(app.request.method.as_str()))
         .style(Style::default().fg(field_border_color(app, RequestField::Method)))
         .block(method_block);
-    frame.render_widget(method_text, layout.method_area);
+    frame.render_widget(method_text, layout.input_row.method_area);
 
     let url_block = Block::default()
         .borders(Borders::ALL)
@@ -54,13 +54,24 @@ fn render_request_panel(frame: &mut Frame, app: &App, layout: &RequestLayout) {
     let url_text = Paragraph::new(Line::from(app.request.url.as_str()))
         .style(Style::default().fg(field_border_color(app, RequestField::Url)))
         .block(url_block);
-    frame.render_widget(url_text, layout.url_area);
+    frame.render_widget(url_text, layout.input_row.url_area);
 
     if is_field_focused(app, RequestField::Url) {
-        let cursor_x = layout.url_area.x + 1 + app.request.url_cursor as u16;
-        let cursor_y = layout.url_area.y + 1;
+        let cursor_x = layout.input_row.url_area.x + 1 + app.request.url_cursor as u16;
+        let cursor_y = layout.input_row.url_area.y + 1;
         frame.set_cursor_position((cursor_x, cursor_y));
     }
+
+    // Render Send button
+    let send_focused = app.focus.panel == Panel::Request;
+    let send_border_color = if send_focused { Color::White } else { Color::DarkGray };
+    let send_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(send_border_color));
+    let send_text = Paragraph::new(Line::from("[ Send ]"))
+        .style(Style::default().fg(Color::Green))
+        .block(send_block);
+    frame.render_widget(send_text, layout.input_row.send_area);
 
     let headers_block = Block::default()
         .borders(Borders::ALL)

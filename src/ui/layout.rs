@@ -45,9 +45,32 @@ impl AppLayout {
     }
 }
 
-pub struct RequestLayout {
+/// Layout for the horizontal request input row: [Method] [URL] [Send]
+pub struct RequestInputLayout {
     pub method_area: Rect,
     pub url_area: Rect,
+    pub send_area: Rect,
+}
+
+impl RequestInputLayout {
+    pub fn new(area: Rect) -> Self {
+        let chunks = Layout::horizontal([
+            Constraint::Length(10),  // Method: fits "DELETE" + padding
+            Constraint::Min(1),      // URL: fill remaining space
+            Constraint::Length(10),  // Send button: fits "[ Send ]"
+        ])
+        .split(area);
+
+        Self {
+            method_area: chunks[0],
+            url_area: chunks[1],
+            send_area: chunks[2],
+        }
+    }
+}
+
+pub struct RequestLayout {
+    pub input_row: RequestInputLayout,
     pub headers_area: Rect,
     pub body_area: Rect,
 }
@@ -55,18 +78,16 @@ pub struct RequestLayout {
 impl RequestLayout {
     pub fn new(area: Rect) -> Self {
         let chunks = Layout::vertical([
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Length(5),
-            Constraint::Min(5),
+            Constraint::Length(3),   // Input row (method + url + send)
+            Constraint::Length(5),   // Headers
+            Constraint::Min(5),      // Body
         ])
         .split(area);
 
         Self {
-            method_area: chunks[0],
-            url_area: chunks[1],
-            headers_area: chunks[2],
-            body_area: chunks[3],
+            input_row: RequestInputLayout::new(chunks[0]),
+            headers_area: chunks[1],
+            body_area: chunks[2],
         }
     }
 }
