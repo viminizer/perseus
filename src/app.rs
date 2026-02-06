@@ -49,6 +49,14 @@ pub enum HttpMethod {
 }
 
 impl HttpMethod {
+    pub const ALL: [HttpMethod; 5] = [
+        HttpMethod::Get,
+        HttpMethod::Post,
+        HttpMethod::Put,
+        HttpMethod::Patch,
+        HttpMethod::Delete,
+    ];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             HttpMethod::Get => "GET",
@@ -57,6 +65,20 @@ impl HttpMethod {
             HttpMethod::Patch => "PATCH",
             HttpMethod::Delete => "DELETE",
         }
+    }
+
+    pub fn index(&self) -> usize {
+        match self {
+            HttpMethod::Get => 0,
+            HttpMethod::Post => 1,
+            HttpMethod::Put => 2,
+            HttpMethod::Patch => 3,
+            HttpMethod::Delete => 4,
+        }
+    }
+
+    pub fn from_index(index: usize) -> Self {
+        Self::ALL[index % Self::ALL.len()]
     }
 
     fn next(&self) -> Self {
@@ -121,6 +143,8 @@ pub struct App {
     pub response_scroll: u16,
     pub loading_tick: u8,
     pub show_help: bool,
+    pub show_method_popup: bool,
+    pub method_popup_index: usize,
 }
 
 impl App {
@@ -140,6 +164,8 @@ impl App {
             response_scroll: 0,
             loading_tick: 0,
             show_help: false,
+            show_method_popup: false,
+            method_popup_index: 0,
         }
     }
 
