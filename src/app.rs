@@ -25,6 +25,7 @@ pub enum ResponseStatus {
     Loading,
     Success(ResponseData),
     Error(String),
+    Cancelled,
 }
 
 #[derive(Debug, Clone)]
@@ -88,6 +89,7 @@ impl HttpMethod {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[allow(dead_code)]
 pub enum Panel {
     Sidebar,
     #[default]
@@ -176,6 +178,7 @@ pub struct App {
     pub show_method_popup: bool,
     pub method_popup_index: usize,
     pub sidebar_visible: bool,
+    request_handle: Option<tokio::task::AbortHandle>,
 }
 
 impl App {
@@ -199,6 +202,7 @@ impl App {
             show_method_popup: false,
             method_popup_index: 0,
             sidebar_visible: true,
+            request_handle: None,
         }
     }
 
@@ -242,9 +246,9 @@ impl App {
         let headers_focused = in_request && focused_field == RequestField::Headers;
         let body_focused = in_request && focused_field == RequestField::Body;
 
-        let url_border = if url_focused { Color::Yellow } else { Color::White };
-        let headers_border = if headers_focused { Color::Yellow } else { Color::White };
-        let body_border = if body_focused { Color::Yellow } else { Color::White };
+        let url_border = if url_focused { Color::Green } else { Color::White };
+        let headers_border = if headers_focused { Color::Green } else { Color::White };
+        let body_border = if body_focused { Color::Green } else { Color::White };
 
         self.request.url_editor.set_block(
             Block::default()
@@ -293,8 +297,8 @@ impl App {
                 .fg(Color::Reset)
                 .add_modifier(Modifier::REVERSED),
             VimMode::Insert => Style::default()
-                .fg(Color::LightBlue)
-                .add_modifier(Modifier::UNDERLINED),
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
             VimMode::Visual => Style::default()
                 .fg(Color::LightYellow)
                 .add_modifier(Modifier::REVERSED),
@@ -315,11 +319,14 @@ impl App {
             })?;
 
             if let Ok(result) = rx.try_recv() {
-                self.response = match result {
-                    Ok(data) => ResponseStatus::Success(data),
-                    Err(e) => ResponseStatus::Error(e),
-                };
-                self.response_scroll = 0;
+                if matches!(self.response, ResponseStatus::Loading) {
+                    self.response = match result {
+                        Ok(data) => ResponseStatus::Success(data),
+                        Err(e) => ResponseStatus::Error(e),
+                    };
+                    self.response_scroll = 0;
+                }
+                self.request_handle = None;
             }
 
             if matches!(self.response, ResponseStatus::Loading) {
@@ -393,9 +400,13 @@ impl App {
             return;
         }
 
-        // Ctrl+R sends request from anywhere
+        // Ctrl+R: send request or cancel if loading
         if key.code == KeyCode::Char('r') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            self.send_request(tx);
+            if matches!(self.response, ResponseStatus::Loading) {
+                self.cancel_request();
+            } else {
+                self.send_request(tx);
+            }
             return;
         }
 
@@ -473,7 +484,11 @@ impl App {
                             self.show_method_popup = true;
                         }
                         RequestField::Send => {
-                            self.send_request(tx);
+                            if matches!(self.response, ResponseStatus::Loading) {
+                                self.cancel_request();
+                            } else {
+                                self.send_request(tx);
+                            }
                         }
                         RequestField::Url | RequestField::Headers | RequestField::Body => {
                             self.enter_editing(VimMode::Normal);
@@ -498,9 +513,13 @@ impl App {
         key: KeyEvent,
         tx: mpsc::Sender<Result<ResponseData, String>>,
     ) {
-        // Ctrl+R sends request even in editing mode
+        // Ctrl+R: send request or cancel if loading, even in editing mode
         if key.code == KeyCode::Char('r') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            self.send_request(tx);
+            if matches!(self.response, ResponseStatus::Loading) {
+                self.cancel_request();
+            } else {
+                self.send_request(tx);
+            }
             return;
         }
 
@@ -550,7 +569,7 @@ impl App {
     fn update_terminal_cursor(&self) {
         let style = match self.vim.mode {
             VimMode::Normal => SetCursorStyle::SteadyBlock,
-            VimMode::Insert => SetCursorStyle::SteadyUnderScore,
+            VimMode::Insert => SetCursorStyle::BlinkingUnderScore,
             VimMode::Visual => SetCursorStyle::SteadyBlock,
             VimMode::Operator(_) => SetCursorStyle::SteadyBlock,
         };
@@ -575,10 +594,18 @@ impl App {
         let headers = self.request.headers_text();
         let body = self.request.body_text();
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let result = http::send_request(&client, method, &url, &headers, &body).await;
             let _ = tx.send(result).await;
         });
+        self.request_handle = Some(handle.abort_handle());
+    }
+
+    fn cancel_request(&mut self) {
+        if let Some(handle) = self.request_handle.take() {
+            handle.abort();
+        }
+        self.response = ResponseStatus::Cancelled;
     }
 
     fn is_editable_field(&self) -> bool {

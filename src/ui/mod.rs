@@ -101,7 +101,7 @@ fn render_request_panel(frame: &mut Frame, app: &App, layout: &RequestLayout) {
     // Render Method box with method-specific color
     let method_focused = is_field_focused(app, RequestField::Method);
     let method_col = method_color(app.request.method);
-    let method_border = if method_focused { Color::Yellow } else { method_col };
+    let method_border = if method_focused { Color::Green } else { method_col };
     let method_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(method_border));
@@ -114,14 +114,20 @@ fn render_request_panel(frame: &mut Frame, app: &App, layout: &RequestLayout) {
     // Render URL editor (TextArea handles its own cursor)
     frame.render_widget(&app.request.url_editor, layout.input_row.url_area);
 
-    // Render Send button with focus highlight
+    // Render Send/Cancel button with focus highlight
     let send_focused = is_field_focused(app, RequestField::Send);
-    let send_border_color = if send_focused { Color::Yellow } else { Color::DarkGray };
+    let is_loading = matches!(app.response, ResponseStatus::Loading);
+    let (btn_label, btn_color) = if is_loading {
+        ("[ Cancel ]", Color::Red)
+    } else {
+        ("[ Send ]", Color::Green)
+    };
+    let send_border_color = if send_focused { Color::Green } else { Color::DarkGray };
     let send_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(send_border_color));
-    let send_text = Paragraph::new(Line::from("[ Send ]"))
-        .style(Style::default().fg(Color::Green))
+    let send_text = Paragraph::new(Line::from(btn_label))
+        .style(Style::default().fg(btn_color))
         .block(send_block);
     frame.render_widget(send_text, layout.input_row.send_area);
 
@@ -134,7 +140,7 @@ fn render_request_panel(frame: &mut Frame, app: &App, layout: &RequestLayout) {
 
 fn render_response_panel(frame: &mut Frame, app: &App, area: Rect) {
     let border_color = if app.focus.panel == Panel::Response {
-        Color::Yellow
+        Color::Green
     } else {
         Color::White
     };
@@ -176,6 +182,11 @@ fn render_response_panel(frame: &mut Frame, app: &App, area: Rect) {
                 .style(Style::default().fg(Color::Red))
                 .wrap(Wrap { trim: true });
             frame.render_widget(error_text, error_inner);
+        }
+        ResponseStatus::Cancelled => {
+            let hint = Paragraph::new("⊘ Request cancelled")
+                .style(Style::default().fg(Color::Yellow));
+            frame.render_widget(hint, inner_area);
         }
         ResponseStatus::Success(data) => {
             let response_layout = ResponseLayout::new(inner_area);
@@ -336,13 +347,43 @@ fn colorize_token(token: &str) -> Span<'static> {
 }
 
 fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let (mode_text, mode_color) = match app.app_mode {
-        AppMode::Navigation => ("[NAVIGATION]", Color::Cyan),
+    let (mode_text, mode_style) = match app.app_mode {
+        AppMode::Navigation => (
+            " NAVIGATION ",
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ),
         AppMode::Editing => match app.vim.mode {
-            VimMode::Normal => ("[VIM]", Color::Green),
-            VimMode::Insert => ("[INSERT]", Color::Yellow),
-            VimMode::Visual => ("[VISUAL]", Color::Magenta),
-            VimMode::Operator(_) => ("[PENDING]", Color::LightGreen),
+            VimMode::Normal => (
+                " VIM ",
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Green)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ),
+            VimMode::Insert => (
+                " INSERT ",
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Yellow)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ),
+            VimMode::Visual => (
+                " VISUAL ",
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Magenta)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ),
+            VimMode::Operator(_) => (
+                " PENDING ",
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::LightGreen)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ),
         },
     };
 
@@ -374,7 +415,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let status_line = Line::from(vec![
-        Span::styled(mode_text, Style::default().fg(mode_color)),
+        Span::styled(mode_text, mode_style),
         Span::raw("  "),
         Span::raw(panel_info),
         Span::raw("  │  "),
