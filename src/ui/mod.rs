@@ -3,7 +3,7 @@ mod widgets;
 
 use layout::{AppLayout, RequestLayout, ResponseLayout};
 use ratatui::{
-    layout::Rect,
+    layout::{Alignment, Rect},
     style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
@@ -116,6 +116,7 @@ fn render_request_panel(frame: &mut Frame, app: &App, layout: &RequestLayout) {
         .border_style(Style::default().fg(method_border));
     let method_text = Paragraph::new(Line::from(app.request.method.as_str()))
         .style(Style::default().fg(method_col))
+        .alignment(Alignment::Center)
         .block(method_block);
     frame.render_widget(method_text, layout.input_row.method_area);
 
