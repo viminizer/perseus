@@ -21,6 +21,10 @@ pub fn render(frame: &mut Frame, app: &App) {
     render_response_panel(frame, app, layout.response_area);
     render_status_bar(frame, app, layout.status_bar);
 
+    if app.show_method_popup {
+        render_method_popup(frame, app);
+    }
+
     if app.show_help {
         render_help_overlay(frame);
     }
@@ -38,6 +42,48 @@ fn render_sidebar(frame: &mut Frame, area: Rect) {
     let placeholder = Paragraph::new("No collections yet")
         .style(Style::default().fg(Color::DarkGray));
     frame.render_widget(placeholder, inner);
+}
+
+fn render_method_popup(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+
+    // Centered popup, small size (width ~15, height ~7)
+    let width: u16 = 15;
+    let height: u16 = HttpMethod::ALL.len() as u16 + 2; // methods + border
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let popup_area = Rect::new(x, y, width, height);
+
+    // Clear background
+    frame.render_widget(Clear, popup_area);
+
+    // Draw popup border
+    let popup_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(" Method ");
+
+    let inner = popup_block.inner(popup_area);
+    frame.render_widget(popup_block, popup_area);
+
+    // List all methods with their colors, highlight selected with inverse
+    let lines: Vec<Line> = HttpMethod::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, method)| {
+            let color = method_color(*method);
+            let is_selected = i == app.method_popup_index;
+            let style = if is_selected {
+                Style::default().fg(Color::Black).bg(color)
+            } else {
+                Style::default().fg(color)
+            };
+            Line::from(Span::styled(format!(" {} ", method.as_str()), style))
+        })
+        .collect();
+
+    let list = Paragraph::new(lines);
+    frame.render_widget(list, inner);
 }
 
 fn is_field_focused(app: &App, field: RequestField) -> bool {
