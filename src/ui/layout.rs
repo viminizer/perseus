@@ -1,6 +1,7 @@
 use ratatui::layout::{Constraint, Layout, Rect};
 
 pub struct AppLayout {
+    pub sidebar_area: Rect,
     pub request_area: Rect,
     pub response_area: Rect,
     pub status_bar: Rect,
@@ -17,13 +18,26 @@ impl AppLayout {
         let main_area = vertical[0];
         let status_bar = vertical[1];
 
+        // Split: sidebar (20 chars or 15%) | main content
+        let sidebar_width = std::cmp::min(20, main_area.width * 15 / 100);
+        let with_sidebar = Layout::horizontal([
+            Constraint::Length(sidebar_width),
+            Constraint::Min(1),
+        ])
+        .split(main_area);
+
+        let sidebar_area = with_sidebar[0];
+        let content_area = with_sidebar[1];
+
+        // Main content splits into request | response
         let horizontal = Layout::horizontal([
             Constraint::Percentage(45),
             Constraint::Percentage(55),
         ])
-        .split(main_area);
+        .split(content_area);
 
         Self {
+            sidebar_area,
             request_area: horizontal[0],
             response_area: horizontal[1],
             status_bar,
