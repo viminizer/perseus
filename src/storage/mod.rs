@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 mod io;
 mod models;
 mod project;
