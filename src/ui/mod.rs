@@ -10,7 +10,8 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, HttpMethod, InputMode, Panel, RequestField, ResponseStatus};
+use crate::app::{App, AppMode, HttpMethod, Panel, RequestField, ResponseStatus};
+use crate::vim::VimMode;
 
 pub fn render(frame: &mut Frame, app: &App) {
     let layout = AppLayout::new(frame.area(), app.sidebar_visible);
@@ -47,17 +48,14 @@ fn render_sidebar(frame: &mut Frame, area: Rect) {
 }
 
 fn render_method_popup(frame: &mut Frame, app: &App, method_area: Rect) {
-    // Position popup directly below the method box
     let width: u16 = 15;
-    let height: u16 = HttpMethod::ALL.len() as u16 + 2; // methods + border
+    let height: u16 = HttpMethod::ALL.len() as u16 + 2;
     let x = method_area.x;
     let y = method_area.y + method_area.height;
     let popup_area = Rect::new(x, y, width, height);
 
-    // Clear background
     frame.render_widget(Clear, popup_area);
 
-    // Draw popup border
     let popup_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan))
@@ -66,7 +64,6 @@ fn render_method_popup(frame: &mut Frame, app: &App, method_area: Rect) {
     let inner = popup_block.inner(popup_area);
     frame.render_widget(popup_block, popup_area);
 
-    // List all methods with their colors, highlight selected with inverse
     let lines: Vec<Line> = HttpMethod::ALL
         .iter()
         .enumerate()
@@ -88,14 +85,6 @@ fn render_method_popup(frame: &mut Frame, app: &App, method_area: Rect) {
 
 fn is_field_focused(app: &App, field: RequestField) -> bool {
     app.focus.panel == Panel::Request && app.focus.request_field == field
-}
-
-fn field_border_color(app: &App, field: RequestField) -> Color {
-    if is_field_focused(app, field) {
-        Color::Yellow
-    } else {
-        Color::White
-    }
 }
 
 fn method_color(method: HttpMethod) -> Color {
@@ -122,24 +111,12 @@ fn render_request_panel(frame: &mut Frame, app: &App, layout: &RequestLayout) {
         .block(method_block);
     frame.render_widget(method_text, layout.input_row.method_area);
 
-    // Render URL input (expands to fill)
-    let url_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(field_border_color(app, RequestField::Url)));
-    let url_text = Paragraph::new(Line::from(app.request.url.as_str()))
-        .style(Style::default().fg(Color::White))
-        .block(url_block);
-    frame.render_widget(url_text, layout.input_row.url_area);
+    // Render URL editor (TextArea handles its own cursor)
+    frame.render_widget(&app.request.url_editor, layout.input_row.url_area);
 
-    if is_field_focused(app, RequestField::Url) {
-        let cursor_x = layout.input_row.url_area.x + 1 + app.request.url_cursor as u16;
-        let cursor_y = layout.input_row.url_area.y + 1;
-        frame.set_cursor_position((cursor_x, cursor_y));
-    }
-
-    // Render Send button (styled as button)
-    let send_focused = app.focus.panel == Panel::Request;
-    let send_border_color = if send_focused { Color::White } else { Color::DarkGray };
+    // Render Send button with focus highlight
+    let send_focused = is_field_focused(app, RequestField::Send);
+    let send_border_color = if send_focused { Color::Yellow } else { Color::DarkGray };
     let send_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(send_border_color));
@@ -148,25 +125,11 @@ fn render_request_panel(frame: &mut Frame, app: &App, layout: &RequestLayout) {
         .block(send_block);
     frame.render_widget(send_text, layout.input_row.send_area);
 
-    // Render Headers below the input row
-    let headers_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(field_border_color(app, RequestField::Headers)))
-        .title("Headers");
-    let headers_text = Paragraph::new(app.request.headers.as_str())
-        .style(Style::default().fg(Color::White))
-        .block(headers_block);
-    frame.render_widget(headers_text, layout.headers_area);
+    // Render Headers editor (TextArea)
+    frame.render_widget(&app.request.headers_editor, layout.headers_area);
 
-    // Render Body below headers
-    let body_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(field_border_color(app, RequestField::Body)))
-        .title("Body");
-    let body_text = Paragraph::new(app.request.body.as_str())
-        .style(Style::default().fg(Color::White))
-        .block(body_block);
-    frame.render_widget(body_text, layout.body_area);
+    // Render Body editor (TextArea)
+    frame.render_widget(&app.request.body_editor, layout.body_area);
 }
 
 fn render_response_panel(frame: &mut Frame, app: &App, area: Rect) {
@@ -186,7 +149,7 @@ fn render_response_panel(frame: &mut Frame, app: &App, area: Rect) {
 
     match &app.response {
         ResponseStatus::Empty => {
-            let hint = Paragraph::new("Press Enter to send request")
+            let hint = Paragraph::new("Press Ctrl+R to send request")
                 .style(Style::default().fg(Color::DarkGray));
             frame.render_widget(hint, inner_area);
         }
@@ -373,9 +336,14 @@ fn colorize_token(token: &str) -> Span<'static> {
 }
 
 fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let (mode_text, mode_color) = match app.input_mode {
-        InputMode::Normal => ("[NORMAL]", Color::Cyan),
-        InputMode::Insert => ("[INSERT]", Color::Yellow),
+    let (mode_text, mode_color) = match app.app_mode {
+        AppMode::Navigation => ("[NAV]", Color::Cyan),
+        AppMode::Editing => match app.vim.mode {
+            VimMode::Normal => ("[VIM]", Color::Green),
+            VimMode::Insert => ("[INSERT]", Color::Yellow),
+            VimMode::Visual => ("[VISUAL]", Color::Magenta),
+            VimMode::Operator(_) => ("[PENDING]", Color::LightGreen),
+        },
     };
 
     let panel_info = match app.focus.panel {
@@ -384,6 +352,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             let field = match app.focus.request_field {
                 RequestField::Method => "Method",
                 RequestField::Url => "URL",
+                RequestField::Send => "Send",
                 RequestField::Headers => "Headers",
                 RequestField::Body => "Body",
             };
@@ -392,9 +361,16 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         Panel::Response => "Response".to_string(),
     };
 
-    let hints = match app.input_mode {
-        InputMode::Normal => "i:insert  j/k:nav  Tab:panel  Enter:send  q:quit",
-        InputMode::Insert => "Esc:normal  Enter:newline",
+    let hints = match app.app_mode {
+        AppMode::Navigation => {
+            "Ctrl+hjkl:nav  Tab:panel  Enter:edit  i:insert  Ctrl+r:send  ?:help  q:quit"
+        }
+        AppMode::Editing => match app.vim.mode {
+            VimMode::Normal => "hjkl:move  w/b/e:word  i/a:insert  v:visual  d/c/y:op  Esc:exit",
+            VimMode::Insert => "type text  Esc:normal",
+            VimMode::Visual => "motion:select  d:delete  y:yank  c:change  Esc:cancel",
+            VimMode::Operator(_) => "motion:complete  Esc:cancel",
+        },
     };
 
     let status_line = Line::from(vec![
@@ -431,21 +407,38 @@ fn render_help_overlay(frame: &mut Frame) {
 
     let help_text = vec![
         Line::from(Span::styled(
-            "Navigation",
+            "Navigation Mode",
             Style::default().fg(Color::Yellow),
         )),
-        Line::from("  j/k or ↑/↓  Move between fields"),
-        Line::from("  h/l or ←/→  Cycle HTTP method"),
-        Line::from("  Tab         Switch panel"),
+        Line::from("  Ctrl+h/l    Move between fields horizontally"),
+        Line::from("  Ctrl+j/k    Move between field rows"),
+        Line::from("  Arrow keys  Same as Ctrl+hjkl"),
+        Line::from("  Tab         Switch panel (Request/Response)"),
+        Line::from("  Enter       Activate field (vim normal mode)"),
+        Line::from("  i           Enter field (vim insert mode)"),
+        Line::from("  Ctrl+r      Send request"),
+        Line::from("  Ctrl+e      Toggle sidebar"),
+        Line::from("  j/k         Scroll response (in Response panel)"),
+        Line::from("  q / Esc     Quit"),
         Line::from(""),
-        Line::from(Span::styled("Modes", Style::default().fg(Color::Yellow))),
-        Line::from("  i           Enter insert mode"),
-        Line::from("  Esc         Return to normal mode"),
-        Line::from(""),
-        Line::from(Span::styled("Actions", Style::default().fg(Color::Yellow))),
-        Line::from("  Enter       Send request"),
-        Line::from("  ?           Toggle this help"),
-        Line::from("  q           Quit"),
+        Line::from(Span::styled(
+            "Vim Editing Mode",
+            Style::default().fg(Color::Yellow),
+        )),
+        Line::from("  h/j/k/l     Cursor movement"),
+        Line::from("  w/b/e       Word forward/back/end"),
+        Line::from("  0/^/$       Line start/end"),
+        Line::from("  gg/G        Top/bottom"),
+        Line::from("  i/a/I/A     Enter insert mode"),
+        Line::from("  o/O         New line below/above (multiline)"),
+        Line::from("  v/V         Visual / visual line"),
+        Line::from("  d/c/y       Delete/change/yank (+ motion)"),
+        Line::from("  dd/cc/yy    Operate on line"),
+        Line::from("  x/X         Delete char forward/backward"),
+        Line::from("  D/C         Delete/change to end of line"),
+        Line::from("  p           Paste"),
+        Line::from("  u / Ctrl+r  Undo / redo"),
+        Line::from("  Esc         Exit to navigation mode"),
     ];
 
     let help_paragraph = Paragraph::new(help_text);

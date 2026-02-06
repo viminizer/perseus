@@ -67,10 +67,10 @@ impl SavedRequest {
     pub fn from_request_state(name: String, request: &crate::app::RequestState) -> Self {
         Self::new(
             name,
-            request.url.clone(),
+            request.url_text(),
             request.method.into(),
-            request.headers.clone(),
-            request.body.clone(),
+            request.headers_text(),
+            request.body_text(),
         )
     }
 }

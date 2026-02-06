@@ -8,10 +8,14 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::widgets::{Block, Borders};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use reqwest::Client;
 use tokio::sync::mpsc;
+use tui_textarea::{Input, TextArea};
 
+use crate::vim::{Transition, Vim, VimMode};
 use crate::{http, ui};
 
 #[derive(Debug, Clone, Default)]
@@ -33,10 +37,10 @@ pub struct ResponseData {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum InputMode {
+pub enum AppMode {
     #[default]
-    Normal,
-    Insert,
+    Navigation,
+    Editing,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -83,15 +87,6 @@ impl HttpMethod {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct RequestState {
-    pub url: String,
-    pub method: HttpMethod,
-    pub headers: String,
-    pub body: String,
-    pub url_cursor: usize,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Panel {
     Sidebar,
@@ -105,6 +100,7 @@ pub enum RequestField {
     Method,
     #[default]
     Url,
+    Send,
     Headers,
     Body,
 }
@@ -115,13 +111,65 @@ pub struct FocusState {
     pub request_field: RequestField,
 }
 
+pub struct RequestState {
+    pub method: HttpMethod,
+    pub url_editor: TextArea<'static>,
+    pub headers_editor: TextArea<'static>,
+    pub body_editor: TextArea<'static>,
+}
+
+impl RequestState {
+    pub fn new() -> Self {
+        let mut url_editor = TextArea::default();
+        url_editor.set_cursor_line_style(Style::default());
+        url_editor.set_placeholder_text("Enter URL...");
+
+        let mut headers_editor = TextArea::default();
+        headers_editor.set_cursor_line_style(Style::default());
+        headers_editor.set_placeholder_text("Key: Value");
+
+        let mut body_editor = TextArea::default();
+        body_editor.set_cursor_line_style(Style::default());
+        body_editor.set_placeholder_text("Request body...");
+
+        Self {
+            method: HttpMethod::default(),
+            url_editor,
+            headers_editor,
+            body_editor,
+        }
+    }
+
+    pub fn url_text(&self) -> String {
+        self.url_editor.lines().join("")
+    }
+
+    pub fn headers_text(&self) -> String {
+        self.headers_editor.lines().join("\n")
+    }
+
+    pub fn body_text(&self) -> String {
+        self.body_editor.lines().join("\n")
+    }
+
+    pub fn active_editor(&mut self, field: RequestField) -> Option<&mut TextArea<'static>> {
+        match field {
+            RequestField::Url => Some(&mut self.url_editor),
+            RequestField::Headers => Some(&mut self.headers_editor),
+            RequestField::Body => Some(&mut self.body_editor),
+            RequestField::Method | RequestField::Send => None,
+        }
+    }
+}
+
 pub struct App {
     running: bool,
     pub request: RequestState,
     pub focus: FocusState,
     pub response: ResponseStatus,
     pub client: Client,
-    pub input_mode: InputMode,
+    pub app_mode: AppMode,
+    pub vim: Vim,
     pub response_scroll: u16,
     pub loading_tick: u8,
     pub show_help: bool,
@@ -139,11 +187,12 @@ impl App {
 
         Self {
             running: true,
-            request: RequestState::default(),
+            request: RequestState::new(),
             focus: FocusState::default(),
             response: ResponseStatus::Empty,
             client,
-            input_mode: InputMode::Normal,
+            app_mode: AppMode::Navigation,
+            vim: Vim::new(VimMode::Normal),
             response_scroll: 0,
             loading_tick: 0,
             show_help: false,
@@ -184,11 +233,83 @@ impl App {
         Ok(())
     }
 
+    pub fn prepare_editors(&mut self) {
+        let is_editing = self.app_mode == AppMode::Editing;
+        let focused_field = self.focus.request_field;
+        let in_request = self.focus.panel == Panel::Request;
+
+        let url_focused = in_request && focused_field == RequestField::Url;
+        let headers_focused = in_request && focused_field == RequestField::Headers;
+        let body_focused = in_request && focused_field == RequestField::Body;
+
+        let url_border = if url_focused { Color::Yellow } else { Color::White };
+        let headers_border = if headers_focused { Color::Yellow } else { Color::White };
+        let body_border = if body_focused { Color::Yellow } else { Color::White };
+
+        self.request.url_editor.set_block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(url_border)),
+        );
+        self.request.headers_editor.set_block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(headers_border))
+                .title("Headers"),
+        );
+        self.request.body_editor.set_block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(body_border))
+                .title("Body"),
+        );
+
+        // Set cursor style based on mode
+        let cursor_style = if is_editing && url_focused {
+            self.vim_cursor_style()
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        self.request.url_editor.set_cursor_style(cursor_style);
+
+        let cursor_style = if is_editing && headers_focused {
+            self.vim_cursor_style()
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        self.request.headers_editor.set_cursor_style(cursor_style);
+
+        let cursor_style = if is_editing && body_focused {
+            self.vim_cursor_style()
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        self.request.body_editor.set_cursor_style(cursor_style);
+    }
+
+    fn vim_cursor_style(&self) -> Style {
+        match self.vim.mode {
+            VimMode::Normal => Style::default()
+                .fg(Color::Reset)
+                .add_modifier(Modifier::REVERSED),
+            VimMode::Insert => Style::default()
+                .fg(Color::LightBlue)
+                .add_modifier(Modifier::REVERSED),
+            VimMode::Visual => Style::default()
+                .fg(Color::LightYellow)
+                .add_modifier(Modifier::REVERSED),
+            VimMode::Operator(_) => Style::default()
+                .fg(Color::LightGreen)
+                .add_modifier(Modifier::REVERSED),
+        }
+    }
+
     async fn event_loop(&mut self) -> Result<()> {
         let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
         let (tx, mut rx) = mpsc::channel::<Result<ResponseData, String>>(1);
 
         while self.running {
+            self.prepare_editors();
             terminal.draw(|frame| {
                 ui::render(frame, self);
             })?;
@@ -218,18 +339,31 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent, tx: mpsc::Sender<Result<ResponseData, String>>) {
-        match self.input_mode {
-            InputMode::Normal => self.handle_normal_mode(key, tx),
-            InputMode::Insert => self.handle_insert_mode(key),
+        match self.app_mode {
+            AppMode::Navigation => self.handle_navigation_mode(key, tx),
+            AppMode::Editing => self.handle_editing_mode(key, tx),
         }
     }
 
-    fn handle_normal_mode(&mut self, key: KeyEvent, tx: mpsc::Sender<Result<ResponseData, String>>) {
+    fn handle_navigation_mode(
+        &mut self,
+        key: KeyEvent,
+        tx: mpsc::Sender<Result<ResponseData, String>>,
+    ) {
+        // Handle help overlay first
+        if self.show_help {
+            if key.code == KeyCode::Char('?') || key.code == KeyCode::Esc {
+                self.show_help = false;
+            }
+            return;
+        }
+
         // Handle method popup navigation when open
         if self.show_method_popup {
             match key.code {
                 KeyCode::Down | KeyCode::Char('j') => {
-                    self.method_popup_index = (self.method_popup_index + 1) % HttpMethod::ALL.len();
+                    self.method_popup_index =
+                        (self.method_popup_index + 1) % HttpMethod::ALL.len();
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
                     self.method_popup_index = if self.method_popup_index == 0 {
@@ -250,36 +384,46 @@ impl App {
             return;
         }
 
-        let in_request_panel = self.focus.panel == Panel::Request;
-        let in_response_panel = self.focus.panel == Panel::Response;
-        let in_method_field = self.focus.request_field == RequestField::Method;
+        let in_request = self.focus.panel == Panel::Request;
+        let in_response = self.focus.panel == Panel::Response;
 
-        // Horizontal navigation with h/l between Method and URL fields
-        if in_request_panel {
-            let in_url_field = self.focus.request_field == RequestField::Url;
+        // Ctrl+E toggles sidebar
+        if key.code == KeyCode::Char('e') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.sidebar_visible = !self.sidebar_visible;
+            return;
+        }
+
+        // Ctrl+R sends request from anywhere
+        if key.code == KeyCode::Char('r') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.send_request(tx);
+            return;
+        }
+
+        // Ctrl+h/l: horizontal navigation in input row
+        if in_request && key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
-                KeyCode::Left | KeyCode::Char('h') if in_url_field => {
-                    self.focus.request_field = RequestField::Method;
+                KeyCode::Char('h') => {
+                    self.prev_horizontal();
                     return;
                 }
-                KeyCode::Right | KeyCode::Char('l') if in_method_field => {
-                    self.focus.request_field = RequestField::Url;
+                KeyCode::Char('l') => {
+                    self.next_horizontal();
+                    return;
+                }
+                KeyCode::Char('j') => {
+                    self.next_vertical();
+                    return;
+                }
+                KeyCode::Char('k') => {
+                    self.prev_vertical();
                     return;
                 }
                 _ => {}
             }
         }
 
-        if in_request_panel && in_method_field {
-            if let KeyCode::Enter = key.code {
-                // Open method popup
-                self.method_popup_index = self.request.method.index();
-                self.show_method_popup = true;
-                return;
-            }
-        }
-
-        if in_response_panel {
+        // Response panel scrolling with j/k
+        if in_response {
             match key.code {
                 KeyCode::Up | KeyCode::Char('k') => {
                     self.response_scroll = self.response_scroll.saturating_sub(1);
@@ -293,65 +437,129 @@ impl App {
             }
         }
 
-        // Ctrl+E toggles sidebar
-        if key.code == KeyCode::Char('e') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            self.sidebar_visible = !self.sidebar_visible;
-            return;
+        // Arrow keys for navigation (same as Ctrl+hjkl)
+        if in_request {
+            match key.code {
+                KeyCode::Left => {
+                    self.prev_horizontal();
+                    return;
+                }
+                KeyCode::Right => {
+                    self.next_horizontal();
+                    return;
+                }
+                KeyCode::Up => {
+                    self.prev_vertical();
+                    return;
+                }
+                KeyCode::Down => {
+                    self.next_vertical();
+                    return;
+                }
+                _ => {}
+            }
         }
 
         match key.code {
             KeyCode::Char('?') => {
                 self.show_help = !self.show_help;
             }
-            KeyCode::Char('i') => {
-                if in_request_panel && self.is_editable_field() {
-                    self.input_mode = InputMode::Insert;
-                    let _ = stdout().execute(SetCursorStyle::SteadyUnderScore);
+            // Enter: activate focused element
+            KeyCode::Enter => {
+                if in_request {
+                    match self.focus.request_field {
+                        RequestField::Method => {
+                            self.method_popup_index = self.request.method.index();
+                            self.show_method_popup = true;
+                        }
+                        RequestField::Send => {
+                            self.send_request(tx);
+                        }
+                        RequestField::Url | RequestField::Headers | RequestField::Body => {
+                            self.enter_editing(VimMode::Normal);
+                        }
+                    }
                 }
             }
-            KeyCode::Enter => {
-                if in_request_panel {
-                    self.send_request(tx);
+            // i on editable field: enter vim insert mode directly
+            KeyCode::Char('i') => {
+                if in_request && self.is_editable_field() {
+                    self.enter_editing(VimMode::Insert);
                 }
             }
             KeyCode::Tab => self.cycle_panel(),
-            KeyCode::Up | KeyCode::Char('k') => self.prev_field(),
-            KeyCode::Down | KeyCode::Char('j') => self.next_field(),
             KeyCode::Char('q') | KeyCode::Esc => self.running = false,
             _ => {}
         }
     }
 
-    fn handle_insert_mode(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Esc => {
-                self.input_mode = InputMode::Normal;
-                let _ = stdout().execute(SetCursorStyle::DefaultUserShape);
+    fn handle_editing_mode(
+        &mut self,
+        key: KeyEvent,
+        tx: mpsc::Sender<Result<ResponseData, String>>,
+    ) {
+        // Ctrl+R sends request even in editing mode
+        if key.code == KeyCode::Char('r') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.send_request(tx);
+            return;
+        }
+
+        let input: Input = key.into();
+        let field = self.focus.request_field;
+        let single_line = field == RequestField::Url;
+
+        let transition = if let Some(textarea) = self.request.active_editor(field) {
+            self.vim.transition(input, textarea, single_line)
+        } else {
+            // Not an editable field, exit back to navigation
+            self.exit_editing();
+            return;
+        };
+
+        match transition {
+            Transition::ExitField => {
+                self.exit_editing();
             }
-            KeyCode::Enter => {
-                match self.focus.request_field {
-                    RequestField::Url => {
-                        self.input_mode = InputMode::Normal;
-                        let _ = stdout().execute(SetCursorStyle::DefaultUserShape);
-                    }
-                    RequestField::Headers | RequestField::Body => {
-                        self.insert_char('\n');
-                    }
-                    RequestField::Method => {}
-                }
+            Transition::Mode(new_mode) => {
+                let textarea = self.request.active_editor(field).unwrap();
+                self.vim = std::mem::replace(&mut self.vim, Vim::new(VimMode::Normal))
+                    .apply_transition(Transition::Mode(new_mode), textarea);
+                self.update_terminal_cursor();
             }
-            KeyCode::Char(c) => {
-                self.insert_char(c);
+            Transition::Pending(pending_input) => {
+                let textarea = self.request.active_editor(field).unwrap();
+                self.vim = std::mem::replace(&mut self.vim, Vim::new(VimMode::Normal))
+                    .apply_transition(Transition::Pending(pending_input), textarea);
             }
-            KeyCode::Backspace => {
-                self.delete_char();
-            }
-            _ => {}
+            Transition::Nop => {}
         }
     }
 
+    fn enter_editing(&mut self, mode: VimMode) {
+        self.app_mode = AppMode::Editing;
+        self.vim = Vim::new(mode);
+        self.update_terminal_cursor();
+    }
+
+    fn exit_editing(&mut self) {
+        self.app_mode = AppMode::Navigation;
+        self.vim = Vim::new(VimMode::Normal);
+        let _ = stdout().execute(SetCursorStyle::DefaultUserShape);
+    }
+
+    fn update_terminal_cursor(&self) {
+        let style = match self.vim.mode {
+            VimMode::Normal => SetCursorStyle::SteadyBlock,
+            VimMode::Insert => SetCursorStyle::SteadyUnderScore,
+            VimMode::Visual => SetCursorStyle::SteadyBlock,
+            VimMode::Operator(_) => SetCursorStyle::SteadyBlock,
+        };
+        let _ = stdout().execute(style);
+    }
+
     fn send_request(&mut self, tx: mpsc::Sender<Result<ResponseData, String>>) {
-        if self.request.url.is_empty() {
+        let url = self.request.url_text();
+        if url.is_empty() {
             self.response = ResponseStatus::Error("URL is required".to_string());
             return;
         }
@@ -364,9 +572,8 @@ impl App {
 
         let client = self.client.clone();
         let method = self.request.method;
-        let url = self.request.url.clone();
-        let headers = self.request.headers.clone();
-        let body = self.request.body.clone();
+        let headers = self.request.headers_text();
+        let body = self.request.body_text();
 
         tokio::spawn(async move {
             let result = http::send_request(&client, method, &url, &headers, &body).await;
@@ -381,42 +588,7 @@ impl App {
         )
     }
 
-    fn insert_char(&mut self, c: char) {
-        match self.focus.request_field {
-            RequestField::Url => {
-                self.request.url.insert(self.request.url_cursor, c);
-                self.request.url_cursor += 1;
-            }
-            RequestField::Headers => {
-                self.request.headers.push(c);
-            }
-            RequestField::Body => {
-                self.request.body.push(c);
-            }
-            RequestField::Method => {}
-        }
-    }
-
-    fn delete_char(&mut self) {
-        match self.focus.request_field {
-            RequestField::Url => {
-                if self.request.url_cursor > 0 {
-                    self.request.url_cursor -= 1;
-                    self.request.url.remove(self.request.url_cursor);
-                }
-            }
-            RequestField::Headers => {
-                self.request.headers.pop();
-            }
-            RequestField::Body => {
-                self.request.body.pop();
-            }
-            RequestField::Method => {}
-        }
-    }
-
     fn cycle_panel(&mut self) {
-        // Tab cycles: Request -> Response -> Request (Sidebar skipped for now)
         self.focus.panel = match self.focus.panel {
             Panel::Sidebar => Panel::Request,
             Panel::Request => Panel::Response,
@@ -424,25 +596,48 @@ impl App {
         };
     }
 
-    fn next_field(&mut self) {
+    fn next_horizontal(&mut self) {
         if self.focus.panel != Panel::Request {
             return;
         }
         self.focus.request_field = match self.focus.request_field {
             RequestField::Method => RequestField::Url,
-            RequestField::Url => RequestField::Headers,
-            RequestField::Headers => RequestField::Body,
-            RequestField::Body => RequestField::Method,
+            RequestField::Url => RequestField::Send,
+            RequestField::Send => RequestField::Method,
+            // If on Headers/Body, move to input row
+            RequestField::Headers | RequestField::Body => RequestField::Url,
         };
     }
 
-    fn prev_field(&mut self) {
+    fn prev_horizontal(&mut self) {
         if self.focus.panel != Panel::Request {
             return;
         }
         self.focus.request_field = match self.focus.request_field {
-            RequestField::Method => RequestField::Body,
+            RequestField::Method => RequestField::Send,
             RequestField::Url => RequestField::Method,
+            RequestField::Send => RequestField::Url,
+            RequestField::Headers | RequestField::Body => RequestField::Url,
+        };
+    }
+
+    fn next_vertical(&mut self) {
+        if self.focus.panel != Panel::Request {
+            return;
+        }
+        self.focus.request_field = match self.focus.request_field {
+            RequestField::Method | RequestField::Url | RequestField::Send => RequestField::Headers,
+            RequestField::Headers => RequestField::Body,
+            RequestField::Body => RequestField::Url,
+        };
+    }
+
+    fn prev_vertical(&mut self) {
+        if self.focus.panel != Panel::Request {
+            return;
+        }
+        self.focus.request_field = match self.focus.request_field {
+            RequestField::Method | RequestField::Url | RequestField::Send => RequestField::Body,
             RequestField::Headers => RequestField::Url,
             RequestField::Body => RequestField::Headers,
         };

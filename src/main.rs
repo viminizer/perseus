@@ -2,6 +2,7 @@ mod app;
 mod http;
 mod storage;
 mod ui;
+mod vim;
 
 use anyhow::Result;
 use app::App;
