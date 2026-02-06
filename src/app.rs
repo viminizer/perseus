@@ -113,6 +113,7 @@ pub struct RequestState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Panel {
+    Sidebar,
     #[default]
     Request,
     Response,
@@ -418,7 +419,9 @@ impl App {
     }
 
     fn cycle_panel(&mut self) {
+        // Tab cycles: Request -> Response -> Request (Sidebar skipped for now)
         self.focus.panel = match self.focus.panel {
+            Panel::Sidebar => Panel::Request,
             Panel::Request => Panel::Response,
             Panel::Response => Panel::Request,
         };

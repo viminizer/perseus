@@ -378,6 +378,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let panel_info = match app.focus.panel {
+        Panel::Sidebar => "Sidebar".to_string(),
         Panel::Request => {
             let field = match app.focus.request_field {
                 RequestField::Method => "Method",
