@@ -3,7 +3,7 @@ use std::panic;
 
 use anyhow::Result;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyEventKind},
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
@@ -126,6 +126,7 @@ pub struct App {
     pub show_help: bool,
     pub show_method_popup: bool,
     pub method_popup_index: usize,
+    pub sidebar_visible: bool,
 }
 
 impl App {
@@ -147,6 +148,7 @@ impl App {
             show_help: false,
             show_method_popup: false,
             method_popup_index: 0,
+            sidebar_visible: true,
         }
     }
 
@@ -288,6 +290,12 @@ impl App {
                 }
                 _ => {}
             }
+        }
+
+        // Ctrl+E toggles sidebar
+        if key.code == KeyCode::Char('e') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.sidebar_visible = !self.sidebar_visible;
+            return;
         }
 
         match key.code {

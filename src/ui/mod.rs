@@ -13,10 +13,12 @@ use ratatui::{
 use crate::app::{App, HttpMethod, InputMode, Panel, RequestField, ResponseStatus};
 
 pub fn render(frame: &mut Frame, app: &App) {
-    let layout = AppLayout::new(frame.area());
+    let layout = AppLayout::new(frame.area(), app.sidebar_visible);
     let request_layout = RequestLayout::new(layout.request_area);
 
-    render_sidebar(frame, layout.sidebar_area);
+    if app.sidebar_visible {
+        render_sidebar(frame, layout.sidebar_area);
+    }
     render_request_panel(frame, app, &request_layout);
     render_response_panel(frame, app, layout.response_area);
     render_status_bar(frame, app, layout.status_bar);
