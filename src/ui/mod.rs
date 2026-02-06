@@ -22,7 +22,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     render_status_bar(frame, app, layout.status_bar);
 
     if app.show_method_popup {
-        render_method_popup(frame, app);
+        render_method_popup(frame, app, request_layout.input_row.method_area);
     }
 
     if app.show_help {
@@ -44,14 +44,12 @@ fn render_sidebar(frame: &mut Frame, area: Rect) {
     frame.render_widget(placeholder, inner);
 }
 
-fn render_method_popup(frame: &mut Frame, app: &App) {
-    let area = frame.area();
-
-    // Centered popup, small size (width ~15, height ~7)
+fn render_method_popup(frame: &mut Frame, app: &App, method_area: Rect) {
+    // Position popup directly below the method box
     let width: u16 = 15;
     let height: u16 = HttpMethod::ALL.len() as u16 + 2; // methods + border
-    let x = (area.width.saturating_sub(width)) / 2;
-    let y = (area.height.saturating_sub(height)) / 2;
+    let x = method_area.x;
+    let y = method_area.y + method_area.height;
     let popup_area = Rect::new(x, y, width, height);
 
     // Clear background
