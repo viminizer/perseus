@@ -31,6 +31,19 @@
 
 ---
 
+### Phase 6.1: Layout Overhaul
+**Goal:** Postman-style layout with sidebar and redesigned request input
+
+- [x] Add sidebar placeholder (empty, ready for Collections)
+- [x] Horizontal request row: [Method] [URL] [Send]
+- [x] Method selector popup with colored methods
+- [x] Vim-style navigation (j/k) in method popup
+
+**Plans:** 1 completed
+**Context:** [CONTEXT.md](phases/06.1-layout-overhaul/CONTEXT.md)
+
+---
+
 ### Phase 7: Collections
 **Goal:** Save requests to named collections, list/select/delete
 
@@ -63,8 +76,9 @@
 |-------|------|--------|
 | 5 | UI Improvements | Complete |
 | 6 | Persistence | Complete |
+| 6.1 | Layout Overhaul | In Progress |
 | 7 | Collections | Pending |
 | 8 | Workspaces | Pending |
 
 ---
-*Last updated: 2026-02-05*
+*Last updated: 2026-02-06*
