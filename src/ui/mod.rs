@@ -101,7 +101,7 @@ fn render_request_panel(frame: &mut Frame, app: &App, layout: &RequestLayout) {
     // Render Method box with method-specific color
     let method_focused = is_field_focused(app, RequestField::Method);
     let method_col = method_color(app.request.method);
-    let method_border = if method_focused { Color::Green } else { method_col };
+    let method_border = if method_focused { Color::Green } else { Color::DarkGray };
     let method_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(method_border));
