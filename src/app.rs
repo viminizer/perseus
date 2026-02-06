@@ -3,6 +3,7 @@ use std::panic;
 
 use anyhow::Result;
 use crossterm::{
+    cursor::SetCursorStyle,
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
@@ -305,6 +306,7 @@ impl App {
             KeyCode::Char('i') => {
                 if in_request_panel && self.is_editable_field() {
                     self.input_mode = InputMode::Insert;
+                    let _ = stdout().execute(SetCursorStyle::SteadyUnderScore);
                 }
             }
             KeyCode::Enter => {
@@ -324,11 +326,13 @@ impl App {
         match key.code {
             KeyCode::Esc => {
                 self.input_mode = InputMode::Normal;
+                let _ = stdout().execute(SetCursorStyle::DefaultUserShape);
             }
             KeyCode::Enter => {
                 match self.focus.request_field {
                     RequestField::Url => {
                         self.input_mode = InputMode::Normal;
+                        let _ = stdout().execute(SetCursorStyle::DefaultUserShape);
                     }
                     RequestField::Headers | RequestField::Body => {
                         self.insert_char('\n');
