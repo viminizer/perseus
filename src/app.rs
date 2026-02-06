@@ -28,6 +28,22 @@ pub enum ResponseStatus {
     Cancelled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ResponseTab {
+    #[default]
+    Body,
+    Headers,
+}
+
+impl ResponseTab {
+    pub fn label(self) -> &'static str {
+        match self {
+            ResponseTab::Body => "Body",
+            ResponseTab::Headers => "Headers",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ResponseData {
     pub status: u16,
@@ -169,6 +185,7 @@ pub struct App {
     pub request: RequestState,
     pub focus: FocusState,
     pub response: ResponseStatus,
+    pub response_tab: ResponseTab,
     pub client: Client,
     pub app_mode: AppMode,
     pub vim: Vim,
@@ -180,6 +197,7 @@ pub struct App {
     pub sidebar_visible: bool,
     request_handle: Option<tokio::task::AbortHandle>,
     pub response_editor: TextArea<'static>,
+    pub response_headers_editor: TextArea<'static>,
 }
 
 impl App {
@@ -194,6 +212,7 @@ impl App {
             request: RequestState::new(),
             focus: FocusState::default(),
             response: ResponseStatus::Empty,
+            response_tab: ResponseTab::default(),
             client,
             app_mode: AppMode::Navigation,
             vim: Vim::new(VimMode::Normal),
@@ -205,6 +224,11 @@ impl App {
             sidebar_visible: true,
             request_handle: None,
             response_editor: {
+                let mut editor = TextArea::default();
+                editor.set_cursor_line_style(Style::default());
+                editor
+            },
+            response_headers_editor: {
                 let mut editor = TextArea::default();
                 editor.set_cursor_line_style(Style::default());
                 editor
@@ -298,23 +322,17 @@ impl App {
 
         // Response editor block/cursor
         let response_editing = is_editing && self.focus.panel == Panel::Response;
-        let response_border = if response_editing {
-            Color::Green
-        } else {
-            Color::White
-        };
-        self.response_editor.set_block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(response_border))
-                .title("Body"),
-        );
+        self.response_editor.set_block(Block::default().borders(Borders::NONE));
+        self.response_headers_editor
+            .set_block(Block::default().borders(Borders::NONE));
         let response_cursor = if response_editing {
             self.vim_cursor_style()
         } else {
             Style::default().fg(Color::DarkGray)
         };
         self.response_editor.set_cursor_style(response_cursor);
+        self.response_headers_editor
+            .set_cursor_style(response_cursor);
     }
 
     fn vim_cursor_style(&self) -> Style {
@@ -351,6 +369,7 @@ impl App {
                         Err(e) => ResponseStatus::Error(e),
                     };
                     self.response_scroll = 0;
+                    self.response_tab = ResponseTab::Body;
                     if let ResponseStatus::Success(ref data) = self.response {
                         let mut lines: Vec<String> =
                             data.body.lines().map(String::from).collect();
@@ -359,6 +378,17 @@ impl App {
                         }
                         self.response_editor = TextArea::new(lines);
                         self.response_editor.set_cursor_line_style(Style::default());
+                        let mut header_lines: Vec<String> = data
+                            .headers
+                            .iter()
+                            .map(|(k, v)| format!("{}: {}", k, v))
+                            .collect();
+                        if header_lines.is_empty() {
+                            header_lines.push(String::new());
+                        }
+                        self.response_headers_editor = TextArea::new(header_lines);
+                        self.response_headers_editor
+                            .set_cursor_line_style(Style::default());
                     }
                 }
                 self.request_handle = None;
@@ -548,12 +578,38 @@ impl App {
             return;
         }
 
-        let input: Input = key.into();
         let is_response = self.focus.panel == Panel::Response;
+        let is_response_vim_switch = is_response
+            && matches!(
+                self.vim.mode,
+                VimMode::Normal | VimMode::Visual | VimMode::Operator(_)
+            );
+
+        if is_response_vim_switch {
+            match key.code {
+                KeyCode::Char('H') => {
+                    self.prev_response_tab();
+                    return;
+                }
+                KeyCode::Char('L') => {
+                    self.next_response_tab();
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        let input: Input = key.into();
 
         let transition = if is_response {
-            self.vim
-                .transition(input, &mut self.response_editor, false)
+            let response_tab = self.response_tab;
+            let vim = &self.vim;
+            match response_tab {
+                ResponseTab::Body => vim.transition(input, &mut self.response_editor, false),
+                ResponseTab::Headers => {
+                    vim.transition(input, &mut self.response_headers_editor, false)
+                }
+            }
         } else {
             let field = self.focus.request_field;
             let single_line = field == RequestField::Url;
@@ -570,27 +626,53 @@ impl App {
                 self.exit_editing();
             }
             Transition::Mode(new_mode) => {
-                let textarea = if is_response {
-                    &mut self.response_editor
+                if is_response {
+                    let response_tab = self.response_tab;
+                    let vim = std::mem::replace(&mut self.vim, Vim::new(VimMode::Normal));
+                    let new_vim = match response_tab {
+                        ResponseTab::Body => vim.apply_transition(
+                            Transition::Mode(new_mode),
+                            &mut self.response_editor,
+                        ),
+                        ResponseTab::Headers => vim.apply_transition(
+                            Transition::Mode(new_mode),
+                            &mut self.response_headers_editor,
+                        ),
+                    };
+                    self.vim = new_vim;
                 } else {
-                    self.request
+                    let textarea = self
+                        .request
                         .active_editor(self.focus.request_field)
-                        .unwrap()
-                };
-                self.vim = std::mem::replace(&mut self.vim, Vim::new(VimMode::Normal))
-                    .apply_transition(Transition::Mode(new_mode), textarea);
+                        .unwrap();
+                    self.vim = std::mem::replace(&mut self.vim, Vim::new(VimMode::Normal))
+                        .apply_transition(Transition::Mode(new_mode), textarea);
+                }
                 self.update_terminal_cursor();
             }
             Transition::Pending(pending_input) => {
-                let textarea = if is_response {
-                    &mut self.response_editor
+                if is_response {
+                    let response_tab = self.response_tab;
+                    let vim = std::mem::replace(&mut self.vim, Vim::new(VimMode::Normal));
+                    let new_vim = match response_tab {
+                        ResponseTab::Body => vim.apply_transition(
+                            Transition::Pending(pending_input),
+                            &mut self.response_editor,
+                        ),
+                        ResponseTab::Headers => vim.apply_transition(
+                            Transition::Pending(pending_input),
+                            &mut self.response_headers_editor,
+                        ),
+                    };
+                    self.vim = new_vim;
                 } else {
-                    self.request
+                    let textarea = self
+                        .request
                         .active_editor(self.focus.request_field)
-                        .unwrap()
-                };
-                self.vim = std::mem::replace(&mut self.vim, Vim::new(VimMode::Normal))
-                    .apply_transition(Transition::Pending(pending_input), textarea);
+                        .unwrap();
+                    self.vim = std::mem::replace(&mut self.vim, Vim::new(VimMode::Normal))
+                        .apply_transition(Transition::Pending(pending_input), textarea);
+                }
             }
             Transition::Nop => {}
         }
@@ -717,5 +799,16 @@ impl App {
             }
             Panel::Sidebar => {}
         }
+    }
+
+    fn next_response_tab(&mut self) {
+        self.response_tab = match self.response_tab {
+            ResponseTab::Body => ResponseTab::Headers,
+            ResponseTab::Headers => ResponseTab::Body,
+        };
+    }
+
+    fn prev_response_tab(&mut self) {
+        self.next_response_tab();
     }
 }

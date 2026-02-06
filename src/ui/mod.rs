@@ -4,13 +4,13 @@ mod widgets;
 use layout::{AppLayout, RequestLayout, ResponseLayout};
 use ratatui::{
     layout::{Alignment, Rect},
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
     Frame,
 };
 
-use crate::app::{App, AppMode, HttpMethod, Panel, RequestField, ResponseStatus};
+use crate::app::{App, AppMode, HttpMethod, Panel, RequestField, ResponseStatus, ResponseTab};
 use crate::vim::VimMode;
 
 pub fn render(frame: &mut Frame, app: &App) {
@@ -153,27 +153,24 @@ fn render_response_panel(frame: &mut Frame, app: &App, area: Rect) {
     let inner_area = outer_block.inner(area);
     frame.render_widget(outer_block, area);
 
+    let response_layout = ResponseLayout::new(inner_area);
+    render_response_tab_bar(frame, app, response_layout.tab_area);
+    frame.render_widget(Paragraph::new(""), response_layout.spacer_area);
+
     match &app.response {
         ResponseStatus::Empty => {
             let hint = Paragraph::new("Press Ctrl+R to send request")
                 .style(Style::default().fg(Color::DarkGray));
-            frame.render_widget(hint, inner_area);
+            frame.render_widget(hint, response_layout.content_area);
         }
         ResponseStatus::Loading => {
             let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
             let frame_idx = (app.loading_tick as usize / 4) % spinner_frames.len();
             let loading = Paragraph::new(format!("{} Sending request...", spinner_frames[frame_idx]))
                 .style(Style::default().fg(Color::Yellow));
-            frame.render_widget(loading, inner_area);
+            frame.render_widget(loading, response_layout.content_area);
         }
         ResponseStatus::Error(msg) => {
-            let error_block = Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Red))
-                .title("Error");
-            let error_inner = error_block.inner(inner_area);
-            frame.render_widget(error_block, inner_area);
-
             let error_lines = vec![Line::from(vec![
                 Span::styled("✗ ", Style::default().fg(Color::Red)),
                 Span::raw(msg.as_str()),
@@ -181,80 +178,121 @@ fn render_response_panel(frame: &mut Frame, app: &App, area: Rect) {
             let error_text = Paragraph::new(error_lines)
                 .style(Style::default().fg(Color::Red))
                 .wrap(Wrap { trim: true });
-            frame.render_widget(error_text, error_inner);
+            frame.render_widget(error_text, response_layout.content_area);
         }
         ResponseStatus::Cancelled => {
             let hint = Paragraph::new("⊘ Request cancelled")
                 .style(Style::default().fg(Color::Yellow));
-            frame.render_widget(hint, inner_area);
+            frame.render_widget(hint, response_layout.content_area);
         }
         ResponseStatus::Success(data) => {
-            let response_layout = ResponseLayout::new(inner_area);
             let editing_response =
                 app.app_mode == AppMode::Editing && app.focus.panel == Panel::Response;
-            render_response_content(
-                frame,
-                app,
-                data,
-                &response_layout,
-                app.response_scroll,
-                editing_response,
-            );
+            match app.response_tab {
+                ResponseTab::Body => render_response_body(
+                    frame,
+                    app,
+                    data,
+                    response_layout.content_area,
+                    app.response_scroll,
+                    editing_response,
+                ),
+                ResponseTab::Headers => render_response_headers(
+                    frame,
+                    app,
+                    data,
+                    response_layout.content_area,
+                    app.response_scroll,
+                    editing_response,
+                ),
+            }
         }
     }
 }
 
-fn render_response_content(
-    frame: &mut Frame,
-    app: &App,
-    data: &crate::app::ResponseData,
-    layout: &ResponseLayout,
-    scroll_offset: u16,
-    editing: bool,
-) {
-    let status_color = if data.status >= 200 && data.status < 300 {
+fn render_response_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
+    let (status_text, status_style) = response_status_text(app);
+    let active_color = if app.focus.panel == Panel::Response {
         Color::Green
-    } else if data.status >= 400 {
-        Color::Red
     } else {
-        Color::Yellow
+        Color::White
     };
-
-    let status_line = Line::from(vec![
+    let active_style = Style::default()
+        .fg(active_color)
+        .add_modifier(Modifier::UNDERLINED);
+    let inactive_style = Style::default().fg(Color::DarkGray);
+    let tabs_line = Line::from(vec![
         Span::styled(
-            format!("{} {}", data.status, data.status_text),
-            Style::default().fg(status_color),
+            "Body",
+            if app.response_tab == ResponseTab::Body {
+                active_style
+            } else {
+                inactive_style
+            },
         ),
-        Span::raw(" "),
+        Span::styled(" | ", inactive_style),
         Span::styled(
-            format!("({}ms)", data.duration_ms),
-            Style::default().fg(Color::DarkGray),
+            "Headers",
+            if app.response_tab == ResponseTab::Headers {
+                active_style
+            } else {
+                inactive_style
+            },
         ),
     ]);
 
-    let status_block = Block::default().borders(Borders::ALL).title("Status");
-    let status_widget = Paragraph::new(status_line).block(status_block);
-    frame.render_widget(status_widget, layout.status_area);
+    let tabs_widget = Paragraph::new(tabs_line);
+    frame.render_widget(tabs_widget, area);
 
-    let headers_text: Vec<Line> = data
-        .headers
-        .iter()
-        .map(|(k, v)| {
-            Line::from(vec![
-                Span::styled(format!("{}: ", k), Style::default().fg(Color::Cyan)),
-                Span::raw(v),
-            ])
-        })
-        .collect();
+    let status_widget =
+        Paragraph::new(Line::from(Span::styled(status_text, status_style)))
+            .alignment(Alignment::Right);
+    frame.render_widget(status_widget, area);
+}
 
-    let headers_block = Block::default().borders(Borders::ALL).title("Headers");
-    let headers_widget = Paragraph::new(headers_text).block(headers_block);
-    frame.render_widget(headers_widget, layout.headers_area);
+fn response_status_text(app: &App) -> (String, Style) {
+    match &app.response {
+        ResponseStatus::Empty => (
+            "Idle".to_string(),
+            Style::default().fg(Color::DarkGray),
+        ),
+        ResponseStatus::Loading => (
+            "Sending request...".to_string(),
+            Style::default().fg(Color::Yellow),
+        ),
+        ResponseStatus::Error(_) => ("Error".to_string(), Style::default().fg(Color::Red)),
+        ResponseStatus::Cancelled => (
+            "Cancelled".to_string(),
+            Style::default().fg(Color::Yellow),
+        ),
+        ResponseStatus::Success(data) => (
+            format!("{} {} ({}ms)", data.status, data.status_text, data.duration_ms),
+            Style::default().fg(status_color(data.status)),
+        ),
+    }
+}
 
-    if editing {
-        frame.render_widget(&app.response_editor, layout.body_area);
+fn status_color(status: u16) -> Color {
+    if status >= 200 && status < 300 {
+        Color::Green
+    } else if status >= 400 {
+        Color::Red
     } else {
-        let body_block = Block::default().borders(Borders::ALL).title("Body");
+        Color::Yellow
+    }
+}
+
+fn render_response_body(
+    frame: &mut Frame,
+    app: &App,
+    data: &crate::app::ResponseData,
+    area: Rect,
+    scroll_offset: u16,
+    editing: bool,
+) {
+    if editing {
+        frame.render_widget(&app.response_editor, area);
+    } else {
         let is_json = is_json_response(&data.headers, &data.body);
         let body_lines = if is_json {
             colorize_json(&data.body)
@@ -264,10 +302,35 @@ fn render_response_content(
                 .map(|l| Line::from(l.to_string()))
                 .collect()
         };
-        let body_widget = Paragraph::new(body_lines)
-            .block(body_block)
-            .scroll((scroll_offset, 0));
-        frame.render_widget(body_widget, layout.body_area);
+        let body_widget = Paragraph::new(body_lines).scroll((scroll_offset, 0));
+        frame.render_widget(body_widget, area);
+    }
+}
+
+fn render_response_headers(
+    frame: &mut Frame,
+    app: &App,
+    data: &crate::app::ResponseData,
+    area: Rect,
+    scroll_offset: u16,
+    editing: bool,
+) {
+    if editing {
+        frame.render_widget(&app.response_headers_editor, area);
+    } else {
+        let headers_text: Vec<Line> = data
+            .headers
+            .iter()
+            .map(|(k, v)| {
+                Line::from(vec![
+                    Span::styled(format!("{}: ", k), Style::default().fg(Color::Cyan)),
+                    Span::raw(v),
+                ])
+            })
+            .collect();
+
+        let headers_widget = Paragraph::new(headers_text).scroll((scroll_offset, 0));
+        frame.render_widget(headers_widget, area);
     }
 }
 
@@ -417,7 +480,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             };
             format!("Request > {}", field)
         }
-        Panel::Response => "Response".to_string(),
+        Panel::Response => format!("Response > {}", app.response_tab.label()),
     };
 
     let hints = match app.app_mode {

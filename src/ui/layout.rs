@@ -96,24 +96,24 @@ impl RequestLayout {
 }
 
 pub struct ResponseLayout {
-    pub status_area: Rect,
-    pub headers_area: Rect,
-    pub body_area: Rect,
+    pub tab_area: Rect,
+    pub spacer_area: Rect,
+    pub content_area: Rect,
 }
 
 impl ResponseLayout {
     pub fn new(area: Rect) -> Self {
         let chunks = Layout::vertical([
-            Constraint::Length(3),
-            Constraint::Percentage(30),
+            Constraint::Length(1),
+            Constraint::Length(1),
             Constraint::Min(3),
         ])
         .split(area);
 
         Self {
-            status_area: chunks[0],
-            headers_area: chunks[1],
-            body_area: chunks[2],
+            tab_area: chunks[0],
+            spacer_area: chunks[1],
+            content_area: chunks[2],
         }
     }
 }
