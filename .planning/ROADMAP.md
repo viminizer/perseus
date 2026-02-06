@@ -44,6 +44,21 @@
 
 ---
 
+### Phase 6.2: Layout & Behavior Refinements ✓
+**Goal:** Refine UI layout and navigation based on 6.1 feedback
+**Depends on:** Phase 6.1
+
+- [x] Position method popup over method box (not centered)
+- [x] Center method name with padding in method box
+- [x] Change h/l to navigate horizontally (not cycle methods)
+- [x] Add sidebar toggle with Ctrl+E
+- [x] Move response panel below body (~40% height)
+- [x] Underscore cursor in insert mode
+
+**Plans:** 1 completed
+
+---
+
 ### Phase 7: Collections
 **Goal:** Save requests to named collections, list/select/delete
 
@@ -76,7 +91,8 @@
 |-------|------|--------|
 | 5 | UI Improvements | Complete |
 | 6 | Persistence | Complete |
-| 6.1 | Layout Overhaul | In Progress |
+| 6.1 | Layout Overhaul | Complete |
+| 6.2 | Layout & Behavior Refinements | Complete |
 | 7 | Collections | Pending |
 | 8 | Workspaces | Pending |
 

@@ -3,8 +3,8 @@
 ## Current Position
 
 **Milestone:** v1.1 — Collections & Workspaces
-**Phase:** 6.1 (Layout Overhaul)
-**Status:** In Progress
+**Phase:** 7 (Collections)
+**Status:** Pending
 
 ## Progress
 
@@ -12,13 +12,16 @@
 |-------|------|--------|
 | 5 | UI Improvements | Complete |
 | 6 | Persistence | Complete |
-| 6.1 | Layout Overhaul | In Progress |
+| 6.1 | Layout Overhaul | Complete |
+| 6.2 | Layout & Behavior Refinements | Complete |
 | 7 | Collections | Pending |
 | 8 | Workspaces | Pending |
 
 ## Recent Activity
 
-- 2026-02-06: Phase 6.1 Plan 01 complete (sidebar, horizontal request row, method popup)
+- 2026-02-06: Phase 6.2 complete (popup positioning, h/l nav, sidebar toggle, vertical layout, cursor style)
+- 2026-02-06: Phase 6.2 inserted after 6.1 for layout/behavior refinements
+- 2026-02-06: Phase 6.1 complete (sidebar, horizontal request row, method popup)
 - 2026-02-06: Phase 6.1 Layout Overhaul inserted before Collections
 - 2026-02-05: Phase 6 Persistence complete (Plan 6-1)
 - 2026-02-05: Phase 5 UI Improvements complete (Plan 5-1)
