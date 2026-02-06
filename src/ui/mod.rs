@@ -10,7 +10,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, InputMode, Panel, RequestField, ResponseStatus};
+use crate::app::{App, HttpMethod, InputMode, Panel, RequestField, ResponseStatus};
 
 pub fn render(frame: &mut Frame, app: &App) {
     let layout = AppLayout::new(frame.area());
@@ -52,22 +52,35 @@ fn field_border_color(app: &App, field: RequestField) -> Color {
     }
 }
 
+fn method_color(method: HttpMethod) -> Color {
+    match method {
+        HttpMethod::Get => Color::Green,
+        HttpMethod::Post => Color::Blue,
+        HttpMethod::Put => Color::Yellow,
+        HttpMethod::Patch => Color::Magenta,
+        HttpMethod::Delete => Color::Red,
+    }
+}
+
 fn render_request_panel(frame: &mut Frame, app: &App, layout: &RequestLayout) {
+    // Render Method box with method-specific color
+    let method_focused = is_field_focused(app, RequestField::Method);
+    let method_col = method_color(app.request.method);
+    let method_border = if method_focused { Color::Yellow } else { method_col };
     let method_block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(field_border_color(app, RequestField::Method)))
-        .title("Method");
+        .border_style(Style::default().fg(method_border));
     let method_text = Paragraph::new(Line::from(app.request.method.as_str()))
-        .style(Style::default().fg(field_border_color(app, RequestField::Method)))
+        .style(Style::default().fg(method_col))
         .block(method_block);
     frame.render_widget(method_text, layout.input_row.method_area);
 
+    // Render URL input (expands to fill)
     let url_block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(field_border_color(app, RequestField::Url)))
-        .title("URL");
+        .border_style(Style::default().fg(field_border_color(app, RequestField::Url)));
     let url_text = Paragraph::new(Line::from(app.request.url.as_str()))
-        .style(Style::default().fg(field_border_color(app, RequestField::Url)))
+        .style(Style::default().fg(Color::White))
         .block(url_block);
     frame.render_widget(url_text, layout.input_row.url_area);
 
@@ -77,7 +90,7 @@ fn render_request_panel(frame: &mut Frame, app: &App, layout: &RequestLayout) {
         frame.set_cursor_position((cursor_x, cursor_y));
     }
 
-    // Render Send button
+    // Render Send button (styled as button)
     let send_focused = app.focus.panel == Panel::Request;
     let send_border_color = if send_focused { Color::White } else { Color::DarkGray };
     let send_block = Block::default()
@@ -88,21 +101,23 @@ fn render_request_panel(frame: &mut Frame, app: &App, layout: &RequestLayout) {
         .block(send_block);
     frame.render_widget(send_text, layout.input_row.send_area);
 
+    // Render Headers below the input row
     let headers_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(field_border_color(app, RequestField::Headers)))
         .title("Headers");
     let headers_text = Paragraph::new(app.request.headers.as_str())
-        .style(Style::default().fg(field_border_color(app, RequestField::Headers)))
+        .style(Style::default().fg(Color::White))
         .block(headers_block);
     frame.render_widget(headers_text, layout.headers_area);
 
+    // Render Body below headers
     let body_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(field_border_color(app, RequestField::Body)))
         .title("Body");
     let body_text = Paragraph::new(app.request.body.as_str())
-        .style(Style::default().fg(field_border_color(app, RequestField::Body)))
+        .style(Style::default().fg(Color::White))
         .block(body_block);
     frame.render_widget(body_text, layout.body_area);
 }
