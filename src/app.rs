@@ -179,6 +179,7 @@ pub struct App {
     pub method_popup_index: usize,
     pub sidebar_visible: bool,
     request_handle: Option<tokio::task::AbortHandle>,
+    pub response_editor: TextArea<'static>,
 }
 
 impl App {
@@ -203,6 +204,11 @@ impl App {
             method_popup_index: 0,
             sidebar_visible: true,
             request_handle: None,
+            response_editor: {
+                let mut editor = TextArea::default();
+                editor.set_cursor_line_style(Style::default());
+                editor
+            },
         }
     }
 
@@ -289,6 +295,26 @@ impl App {
             Style::default().fg(Color::DarkGray)
         };
         self.request.body_editor.set_cursor_style(cursor_style);
+
+        // Response editor block/cursor
+        let response_editing = is_editing && self.focus.panel == Panel::Response;
+        let response_border = if response_editing {
+            Color::Green
+        } else {
+            Color::White
+        };
+        self.response_editor.set_block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(response_border))
+                .title("Body"),
+        );
+        let response_cursor = if response_editing {
+            self.vim_cursor_style()
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        self.response_editor.set_cursor_style(response_cursor);
     }
 
     fn vim_cursor_style(&self) -> Style {
@@ -325,6 +351,15 @@ impl App {
                         Err(e) => ResponseStatus::Error(e),
                     };
                     self.response_scroll = 0;
+                    if let ResponseStatus::Success(ref data) = self.response {
+                        let mut lines: Vec<String> =
+                            data.body.lines().map(String::from).collect();
+                        if lines.is_empty() {
+                            lines.push(String::new());
+                        }
+                        self.response_editor = TextArea::new(lines);
+                        self.response_editor.set_cursor_line_style(Style::default());
+                    }
                 }
                 self.request_handle = None;
             }
@@ -494,12 +529,20 @@ impl App {
                             self.enter_editing(VimMode::Normal);
                         }
                     }
+                } else if in_response
+                    && matches!(self.response, ResponseStatus::Success(_))
+                {
+                    self.enter_editing(VimMode::Normal);
                 }
             }
             // i on editable field: enter vim insert mode directly
             KeyCode::Char('i') => {
                 if in_request && self.is_editable_field() {
                     self.enter_editing(VimMode::Insert);
+                } else if in_response
+                    && matches!(self.response, ResponseStatus::Success(_))
+                {
+                    self.enter_editing(VimMode::Normal);
                 }
             }
             KeyCode::Tab => self.cycle_panel(),
@@ -524,15 +567,20 @@ impl App {
         }
 
         let input: Input = key.into();
-        let field = self.focus.request_field;
-        let single_line = field == RequestField::Url;
+        let is_response = self.focus.panel == Panel::Response;
 
-        let transition = if let Some(textarea) = self.request.active_editor(field) {
-            self.vim.transition(input, textarea, single_line)
+        let transition = if is_response {
+            self.vim
+                .transition(input, &mut self.response_editor, false)
         } else {
-            // Not an editable field, exit back to navigation
-            self.exit_editing();
-            return;
+            let field = self.focus.request_field;
+            let single_line = field == RequestField::Url;
+            if let Some(textarea) = self.request.active_editor(field) {
+                self.vim.transition(input, textarea, single_line)
+            } else {
+                self.exit_editing();
+                return;
+            }
         };
 
         match transition {
@@ -540,13 +588,25 @@ impl App {
                 self.exit_editing();
             }
             Transition::Mode(new_mode) => {
-                let textarea = self.request.active_editor(field).unwrap();
+                let textarea = if is_response {
+                    &mut self.response_editor
+                } else {
+                    self.request
+                        .active_editor(self.focus.request_field)
+                        .unwrap()
+                };
                 self.vim = std::mem::replace(&mut self.vim, Vim::new(VimMode::Normal))
                     .apply_transition(Transition::Mode(new_mode), textarea);
                 self.update_terminal_cursor();
             }
             Transition::Pending(pending_input) => {
-                let textarea = self.request.active_editor(field).unwrap();
+                let textarea = if is_response {
+                    &mut self.response_editor
+                } else {
+                    self.request
+                        .active_editor(self.focus.request_field)
+                        .unwrap()
+                };
                 self.vim = std::mem::replace(&mut self.vim, Vim::new(VimMode::Normal))
                     .apply_transition(Transition::Pending(pending_input), textarea);
             }

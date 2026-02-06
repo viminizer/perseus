@@ -32,10 +32,10 @@ impl AppLayout {
             (Rect::default(), main_area)
         };
 
-        // Main content is vertical: request area (60%) | response area (40%)
+        // Main content is vertical: request area (50%) | response area (50%)
         let content_vertical = Layout::vertical([
-            Constraint::Percentage(60),
-            Constraint::Percentage(40),
+            Constraint::Percentage(50),
+            Constraint::Percentage(50),
         ])
         .split(content_area);
 

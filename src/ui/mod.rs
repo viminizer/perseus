@@ -190,16 +190,27 @@ fn render_response_panel(frame: &mut Frame, app: &App, area: Rect) {
         }
         ResponseStatus::Success(data) => {
             let response_layout = ResponseLayout::new(inner_area);
-            render_response_content(frame, data, &response_layout, app.response_scroll);
+            let editing_response =
+                app.app_mode == AppMode::Editing && app.focus.panel == Panel::Response;
+            render_response_content(
+                frame,
+                app,
+                data,
+                &response_layout,
+                app.response_scroll,
+                editing_response,
+            );
         }
     }
 }
 
 fn render_response_content(
     frame: &mut Frame,
+    app: &App,
     data: &crate::app::ResponseData,
     layout: &ResponseLayout,
     scroll_offset: u16,
+    editing: bool,
 ) {
     let status_color = if data.status >= 200 && data.status < 300 {
         Color::Green
@@ -240,17 +251,24 @@ fn render_response_content(
     let headers_widget = Paragraph::new(headers_text).block(headers_block);
     frame.render_widget(headers_widget, layout.headers_area);
 
-    let body_block = Block::default().borders(Borders::ALL).title("Body");
-    let is_json = is_json_response(&data.headers, &data.body);
-    let body_lines = if is_json {
-        colorize_json(&data.body)
+    if editing {
+        frame.render_widget(&app.response_editor, layout.body_area);
     } else {
-        data.body.lines().map(|l| Line::from(l.to_string())).collect()
-    };
-    let body_widget = Paragraph::new(body_lines)
-        .block(body_block)
-        .scroll((scroll_offset, 0));
-    frame.render_widget(body_widget, layout.body_area);
+        let body_block = Block::default().borders(Borders::ALL).title("Body");
+        let is_json = is_json_response(&data.headers, &data.body);
+        let body_lines = if is_json {
+            colorize_json(&data.body)
+        } else {
+            data.body
+                .lines()
+                .map(|l| Line::from(l.to_string()))
+                .collect()
+        };
+        let body_widget = Paragraph::new(body_lines)
+            .block(body_block)
+            .scroll((scroll_offset, 0));
+        frame.render_widget(body_widget, layout.body_area);
+    }
 }
 
 fn is_json_response(headers: &[(String, String)], body: &str) -> bool {
@@ -351,7 +369,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         AppMode::Navigation => (
             " NAVIGATION ",
             Style::default()
-                .fg(Color::Black)
+                .fg(Color::Red)
                 .bg(Color::Cyan)
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ),
