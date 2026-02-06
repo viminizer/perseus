@@ -32,17 +32,17 @@ impl AppLayout {
             (Rect::default(), main_area)
         };
 
-        // Main content splits into request | response
-        let horizontal = Layout::horizontal([
-            Constraint::Percentage(45),
-            Constraint::Percentage(55),
+        // Main content is vertical: request area (60%) | response area (40%)
+        let content_vertical = Layout::vertical([
+            Constraint::Percentage(60),
+            Constraint::Percentage(40),
         ])
         .split(content_area);
 
         Self {
             sidebar_area,
-            request_area: horizontal[0],
-            response_area: horizontal[1],
+            request_area: content_vertical[0],
+            response_area: content_vertical[1],
             status_bar,
         }
     }
@@ -83,7 +83,7 @@ impl RequestLayout {
         let chunks = Layout::vertical([
             Constraint::Length(3),   // Input row (method + url + send)
             Constraint::Length(5),   // Headers
-            Constraint::Min(5),      // Body
+            Constraint::Min(3),      // Body (takes remaining space)
         ])
         .split(area);
 
