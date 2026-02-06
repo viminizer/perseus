@@ -16,6 +16,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     let layout = AppLayout::new(frame.area());
     let request_layout = RequestLayout::new(layout.request_area);
 
+    render_sidebar(frame, layout.sidebar_area);
     render_request_panel(frame, app, &request_layout);
     render_response_panel(frame, app, layout.response_area);
     render_status_bar(frame, app, layout.status_bar);
@@ -23,6 +24,20 @@ pub fn render(frame: &mut Frame, app: &App) {
     if app.show_help {
         render_help_overlay(frame);
     }
+}
+
+fn render_sidebar(frame: &mut Frame, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title("Collections");
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let placeholder = Paragraph::new("No collections yet")
+        .style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(placeholder, inner);
 }
 
 fn is_field_focused(app: &App, field: RequestField) -> bool {
