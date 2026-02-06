@@ -241,6 +241,31 @@ impl App {
     }
 
     fn handle_normal_mode(&mut self, key: KeyEvent, tx: mpsc::Sender<Result<ResponseData, String>>) {
+        // Handle method popup navigation when open
+        if self.show_method_popup {
+            match key.code {
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.method_popup_index = (self.method_popup_index + 1) % HttpMethod::ALL.len();
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.method_popup_index = if self.method_popup_index == 0 {
+                        HttpMethod::ALL.len() - 1
+                    } else {
+                        self.method_popup_index - 1
+                    };
+                }
+                KeyCode::Enter => {
+                    self.request.method = HttpMethod::from_index(self.method_popup_index);
+                    self.show_method_popup = false;
+                }
+                KeyCode::Esc => {
+                    self.show_method_popup = false;
+                }
+                _ => {}
+            }
+            return;
+        }
+
         let in_request_panel = self.focus.panel == Panel::Request;
         let in_response_panel = self.focus.panel == Panel::Response;
         let in_method_field = self.focus.request_field == RequestField::Method;
@@ -253,6 +278,12 @@ impl App {
                 }
                 KeyCode::Right | KeyCode::Char('l') => {
                     self.request.method = self.request.method.next();
+                    return;
+                }
+                KeyCode::Enter => {
+                    // Open method popup
+                    self.method_popup_index = self.request.method.index();
+                    self.show_method_popup = true;
                     return;
                 }
                 _ => {}
