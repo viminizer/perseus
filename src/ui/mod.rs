@@ -337,7 +337,7 @@ fn colorize_token(token: &str) -> Span<'static> {
 
 fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let (mode_text, mode_color) = match app.app_mode {
-        AppMode::Navigation => ("[NAV]", Color::Cyan),
+        AppMode::Navigation => ("[NAVIGATION]", Color::Cyan),
         AppMode::Editing => match app.vim.mode {
             VimMode::Normal => ("[VIM]", Color::Green),
             VimMode::Insert => ("[INSERT]", Color::Yellow),

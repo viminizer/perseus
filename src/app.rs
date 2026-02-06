@@ -294,7 +294,7 @@ impl App {
                 .add_modifier(Modifier::REVERSED),
             VimMode::Insert => Style::default()
                 .fg(Color::LightBlue)
-                .add_modifier(Modifier::REVERSED),
+                .add_modifier(Modifier::UNDERLINED),
             VimMode::Visual => Style::default()
                 .fg(Color::LightYellow)
                 .add_modifier(Modifier::REVERSED),
@@ -437,22 +437,22 @@ impl App {
             }
         }
 
-        // Arrow keys for navigation (same as Ctrl+hjkl)
+        // Arrow keys + bare hjkl for navigation in Request panel
         if in_request {
             match key.code {
-                KeyCode::Left => {
+                KeyCode::Left | KeyCode::Char('h') => {
                     self.prev_horizontal();
                     return;
                 }
-                KeyCode::Right => {
+                KeyCode::Right | KeyCode::Char('l') => {
                     self.next_horizontal();
                     return;
                 }
-                KeyCode::Up => {
+                KeyCode::Up | KeyCode::Char('k') => {
                     self.prev_vertical();
                     return;
                 }
-                KeyCode::Down => {
+                KeyCode::Down | KeyCode::Char('j') => {
                     self.next_vertical();
                     return;
                 }
@@ -488,7 +488,7 @@ impl App {
                 }
             }
             KeyCode::Tab => self.cycle_panel(),
-            KeyCode::Char('q') | KeyCode::Esc => self.running = false,
+            KeyCode::Char('q') => self.running = false,
             _ => {}
         }
     }
