@@ -80,26 +80,6 @@ impl HttpMethod {
     pub fn from_index(index: usize) -> Self {
         Self::ALL[index % Self::ALL.len()]
     }
-
-    fn next(&self) -> Self {
-        match self {
-            HttpMethod::Get => HttpMethod::Post,
-            HttpMethod::Post => HttpMethod::Put,
-            HttpMethod::Put => HttpMethod::Patch,
-            HttpMethod::Patch => HttpMethod::Delete,
-            HttpMethod::Delete => HttpMethod::Get,
-        }
-    }
-
-    fn prev(&self) -> Self {
-        match self {
-            HttpMethod::Get => HttpMethod::Delete,
-            HttpMethod::Post => HttpMethod::Get,
-            HttpMethod::Put => HttpMethod::Post,
-            HttpMethod::Patch => HttpMethod::Put,
-            HttpMethod::Delete => HttpMethod::Patch,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -271,23 +251,28 @@ impl App {
         let in_response_panel = self.focus.panel == Panel::Response;
         let in_method_field = self.focus.request_field == RequestField::Method;
 
-        if in_request_panel && in_method_field {
+        // Horizontal navigation with h/l between Method and URL fields
+        if in_request_panel {
+            let in_url_field = self.focus.request_field == RequestField::Url;
             match key.code {
-                KeyCode::Left | KeyCode::Char('h') => {
-                    self.request.method = self.request.method.prev();
+                KeyCode::Left | KeyCode::Char('h') if in_url_field => {
+                    self.focus.request_field = RequestField::Method;
                     return;
                 }
-                KeyCode::Right | KeyCode::Char('l') => {
-                    self.request.method = self.request.method.next();
-                    return;
-                }
-                KeyCode::Enter => {
-                    // Open method popup
-                    self.method_popup_index = self.request.method.index();
-                    self.show_method_popup = true;
+                KeyCode::Right | KeyCode::Char('l') if in_method_field => {
+                    self.focus.request_field = RequestField::Url;
                     return;
                 }
                 _ => {}
+            }
+        }
+
+        if in_request_panel && in_method_field {
+            if let KeyCode::Enter = key.code {
+                // Open method popup
+                self.method_popup_index = self.request.method.index();
+                self.show_method_popup = true;
+                return;
             }
         }
 
