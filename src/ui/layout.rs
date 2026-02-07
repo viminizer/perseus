@@ -73,24 +73,24 @@ impl RequestInputLayout {
 }
 
 pub struct RequestLayout {
-    pub input_row: RequestInputLayout,
-    pub headers_area: Rect,
-    pub body_area: Rect,
+    pub tab_area: Rect,
+    pub spacer_area: Rect,
+    pub content_area: Rect,
 }
 
 impl RequestLayout {
     pub fn new(area: Rect) -> Self {
         let chunks = Layout::vertical([
-            Constraint::Length(3),   // Input row (method + url + send)
-            Constraint::Length(5),   // Headers
-            Constraint::Min(3),      // Body (takes remaining space)
+            Constraint::Length(1),   // Tabs
+            Constraint::Length(1),   // Spacer
+            Constraint::Min(3),      // Content (takes remaining space)
         ])
         .split(area);
 
         Self {
-            input_row: RequestInputLayout::new(chunks[0]),
-            headers_area: chunks[1],
-            body_area: chunks[2],
+            tab_area: chunks[0],
+            spacer_area: chunks[1],
+            content_area: chunks[2],
         }
     }
 }

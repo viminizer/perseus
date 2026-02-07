@@ -44,6 +44,13 @@ impl ResponseTab {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RequestTab {
+    #[default]
+    Headers,
+    Body,
+}
+
 #[derive(Debug, Clone)]
 pub struct ResponseData {
     pub status: u16,
@@ -186,6 +193,7 @@ pub struct App {
     pub focus: FocusState,
     pub response: ResponseStatus,
     pub response_tab: ResponseTab,
+    pub request_tab: RequestTab,
     pub client: Client,
     pub app_mode: AppMode,
     pub vim: Vim,
@@ -213,6 +221,7 @@ impl App {
             focus: FocusState::default(),
             response: ResponseStatus::Empty,
             response_tab: ResponseTab::default(),
+            request_tab: RequestTab::default(),
             client,
             app_mode: AppMode::Navigation,
             vim: Vim::new(VimMode::Normal),
@@ -277,26 +286,18 @@ impl App {
         let body_focused = in_request && focused_field == RequestField::Body;
 
         let url_border = if url_focused { Color::Green } else { Color::White };
-        let headers_border = if headers_focused { Color::Green } else { Color::White };
-        let body_border = if body_focused { Color::Green } else { Color::White };
 
         self.request.url_editor.set_block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(url_border)),
         );
-        self.request.headers_editor.set_block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(headers_border))
-                .title("Headers"),
-        );
-        self.request.body_editor.set_block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(body_border))
-                .title("Body"),
-        );
+        self.request
+            .headers_editor
+            .set_block(Block::default().borders(Borders::NONE));
+        self.request
+            .body_editor
+            .set_block(Block::default().borders(Borders::NONE));
 
         // Set cursor style based on mode
         let cursor_style = if is_editing && url_focused {
@@ -593,12 +594,29 @@ impl App {
             return;
         }
 
+        let is_request = self.focus.panel == Panel::Request;
         let is_response = self.focus.panel == Panel::Response;
+        let is_request_vim_switch = is_request
+            && matches!(self.vim.mode, VimMode::Normal | VimMode::Insert);
         let is_response_vim_switch = is_response
             && matches!(
                 self.vim.mode,
                 VimMode::Normal | VimMode::Visual | VimMode::Operator(_)
             );
+
+        if is_request_vim_switch {
+            match key.code {
+                KeyCode::Char('H') => {
+                    self.prev_request_tab();
+                    return;
+                }
+                KeyCode::Char('L') => {
+                    self.next_request_tab();
+                    return;
+                }
+                _ => {}
+            }
+        }
 
         if is_response_vim_switch {
             match key.code {
@@ -784,10 +802,12 @@ impl App {
             Panel::Request => {
                 self.focus.request_field = match self.focus.request_field {
                     RequestField::Method | RequestField::Url | RequestField::Send => {
-                        RequestField::Headers
+                        match self.request_tab {
+                            RequestTab::Headers => RequestField::Headers,
+                            RequestTab::Body => RequestField::Body,
+                        }
                     }
-                    RequestField::Headers => RequestField::Body,
-                    RequestField::Body => {
+                    RequestField::Headers | RequestField::Body => {
                         self.focus.panel = Panel::Response;
                         return;
                     }
@@ -801,19 +821,45 @@ impl App {
         match self.focus.panel {
             Panel::Response => {
                 self.focus.panel = Panel::Request;
-                self.focus.request_field = RequestField::Body;
+                self.focus.request_field = match self.request_tab {
+                    RequestTab::Headers => RequestField::Headers,
+                    RequestTab::Body => RequestField::Body,
+                };
             }
             Panel::Request => {
                 self.focus.request_field = match self.focus.request_field {
                     RequestField::Method | RequestField::Url | RequestField::Send => {
-                        RequestField::Body
+                        match self.request_tab {
+                            RequestTab::Headers => RequestField::Headers,
+                            RequestTab::Body => RequestField::Body,
+                        }
                     }
-                    RequestField::Headers => RequestField::Url,
-                    RequestField::Body => RequestField::Headers,
+                    RequestField::Headers | RequestField::Body => RequestField::Url,
                 };
             }
             Panel::Sidebar => {}
         }
+    }
+
+    fn next_request_tab(&mut self) {
+        self.request_tab = match self.request_tab {
+            RequestTab::Headers => RequestTab::Body,
+            RequestTab::Body => RequestTab::Headers,
+        };
+
+        if self.focus.panel == Panel::Request {
+            self.focus.request_field = match self.focus.request_field {
+                RequestField::Headers | RequestField::Body => match self.request_tab {
+                    RequestTab::Headers => RequestField::Headers,
+                    RequestTab::Body => RequestField::Body,
+                },
+                other => other,
+            };
+        }
+    }
+
+    fn prev_request_tab(&mut self) {
+        self.next_request_tab();
     }
 
     fn next_response_tab(&mut self) {

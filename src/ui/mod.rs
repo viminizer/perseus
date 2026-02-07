@@ -1,31 +1,36 @@
 mod layout;
 mod widgets;
 
-use layout::{AppLayout, RequestLayout, ResponseLayout};
+use layout::{AppLayout, RequestInputLayout, RequestLayout, ResponseLayout};
 use ratatui::{
-    layout::{Alignment, Rect},
+    layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
     Frame,
 };
 
-use crate::app::{App, AppMode, HttpMethod, Panel, RequestField, ResponseStatus, ResponseTab};
+use crate::app::{
+    App, AppMode, HttpMethod, Panel, RequestField, RequestTab, ResponseStatus, ResponseTab,
+};
 use crate::vim::VimMode;
 
 pub fn render(frame: &mut Frame, app: &App) {
     let layout = AppLayout::new(frame.area(), app.sidebar_visible);
-    let request_layout = RequestLayout::new(layout.request_area);
+    let request_split = Layout::vertical([Constraint::Length(3), Constraint::Min(3)])
+        .split(layout.request_area);
+    let input_layout = RequestInputLayout::new(request_split[0]);
 
     if app.sidebar_visible {
         render_sidebar(frame, layout.sidebar_area);
     }
-    render_request_panel(frame, app, &request_layout);
+    render_request_input_row(frame, app, &input_layout);
+    render_request_panel(frame, app, request_split[1]);
     render_response_panel(frame, app, layout.response_area);
     render_status_bar(frame, app, layout.status_bar);
 
     if app.show_method_popup {
-        render_method_popup(frame, app, request_layout.input_row.method_area);
+        render_method_popup(frame, app, input_layout.method_area);
     }
 
     if app.show_help {
@@ -97,7 +102,7 @@ fn method_color(method: HttpMethod) -> Color {
     }
 }
 
-fn render_request_panel(frame: &mut Frame, app: &App, layout: &RequestLayout) {
+fn render_request_input_row(frame: &mut Frame, app: &App, layout: &RequestInputLayout) {
     // Render Method box with method-specific color
     let method_focused = is_field_focused(app, RequestField::Method);
     let method_col = method_color(app.request.method);
@@ -109,10 +114,10 @@ fn render_request_panel(frame: &mut Frame, app: &App, layout: &RequestLayout) {
         .style(Style::default().fg(method_col))
         .alignment(Alignment::Center)
         .block(method_block);
-    frame.render_widget(method_text, layout.input_row.method_area);
+    frame.render_widget(method_text, layout.method_area);
 
     // Render URL editor (TextArea handles its own cursor)
-    frame.render_widget(&app.request.url_editor, layout.input_row.url_area);
+    frame.render_widget(&app.request.url_editor, layout.url_area);
 
     // Render Send/Cancel button with focus highlight
     let send_focused = is_field_focused(app, RequestField::Send);
@@ -129,13 +134,83 @@ fn render_request_panel(frame: &mut Frame, app: &App, layout: &RequestLayout) {
     let send_text = Paragraph::new(Line::from(btn_label))
         .style(Style::default().fg(btn_color))
         .block(send_block);
-    frame.render_widget(send_text, layout.input_row.send_area);
+    frame.render_widget(send_text, layout.send_area);
+}
 
-    // Render Headers editor (TextArea)
-    frame.render_widget(&app.request.headers_editor, layout.headers_area);
+fn render_request_panel(frame: &mut Frame, app: &App, area: Rect) {
+    let request_panel_focused = app.focus.panel == Panel::Request
+        && matches!(
+            app.focus.request_field,
+            RequestField::Headers | RequestField::Body
+        );
+    let border_color = if request_panel_focused {
+        Color::Green
+    } else {
+        Color::White
+    };
 
-    // Render Body editor (TextArea)
-    frame.render_widget(&app.request.body_editor, layout.body_area);
+    let outer_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color))
+        .title("Request");
+
+    let inner_area = outer_block.inner(area);
+    frame.render_widget(outer_block, area);
+
+    let layout = RequestLayout::new(inner_area);
+
+    // Render Request tabs
+    render_request_tab_bar(frame, app, layout.tab_area);
+    frame.render_widget(Paragraph::new(""), layout.spacer_area);
+
+    // Render active Request editor (TextArea)
+    match app.request_tab {
+        RequestTab::Headers => {
+            frame.render_widget(&app.request.headers_editor, layout.content_area);
+        }
+        RequestTab::Body => {
+            frame.render_widget(&app.request.body_editor, layout.content_area);
+        }
+    }
+}
+
+fn render_request_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
+    let request_panel_focused = app.focus.panel == Panel::Request
+        && matches!(
+            app.focus.request_field,
+            RequestField::Headers | RequestField::Body
+        );
+    let active_color = if request_panel_focused {
+        Color::Green
+    } else {
+        Color::White
+    };
+    let active_style = Style::default()
+        .fg(active_color)
+        .add_modifier(Modifier::UNDERLINED);
+    let inactive_style = Style::default().fg(Color::DarkGray);
+    let tabs_line = Line::from(vec![
+        Span::styled(
+            "Headers",
+            if app.request_tab == RequestTab::Headers {
+                active_style
+            } else {
+                inactive_style
+            },
+        ),
+        Span::styled(" | ", inactive_style),
+        Span::styled(
+            "Body",
+            if app.request_tab == RequestTab::Body {
+                active_style
+            } else {
+                inactive_style
+            },
+        ),
+    ]);
+
+    let tabs_widget = Paragraph::new(tabs_line);
+    frame.render_widget(tabs_widget, area);
 }
 
 fn render_response_panel(frame: &mut Frame, app: &App, area: Rect) {
