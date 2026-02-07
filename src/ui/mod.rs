@@ -487,7 +487,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         AppMode::Navigation => "hjkl:nav  Enter:edit  i:insert  Ctrl+r:send  ?:help  q:quit",
         AppMode::Editing => match app.vim.mode {
             VimMode::Normal => "hjkl:move  w/b/e:word  i/a:insert  v:visual  d/c/y:op  Esc:exit",
-            VimMode::Insert => "type text  Esc:normal",
+            VimMode::Insert => "type text  Enter:send(URL)  Esc:normal",
             VimMode::Visual => "motion:select  d:delete  y:yank  c:change  Esc:cancel",
             VimMode::Operator(_) => "motion:complete  Esc:cancel",
         },
@@ -555,6 +555,7 @@ fn render_help_overlay(frame: &mut Frame) {
         Line::from("  D/C         Delete/change to end of line"),
         Line::from("  p           Paste"),
         Line::from("  u / Ctrl+r  Undo / redo"),
+        Line::from("  Enter       Send request (URL field only)"),
         Line::from("  Esc         Exit to navigation mode"),
     ];
 

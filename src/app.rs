@@ -578,6 +578,21 @@ impl App {
             return;
         }
 
+        // Enter in URL insert mode: send request (or cancel if loading), then exit editing
+        if self.focus.panel == Panel::Request
+            && self.focus.request_field == RequestField::Url
+            && self.vim.mode == VimMode::Insert
+            && key.code == KeyCode::Enter
+        {
+            if matches!(self.response, ResponseStatus::Loading) {
+                self.cancel_request();
+            } else {
+                self.send_request(tx);
+            }
+            self.exit_editing();
+            return;
+        }
+
         let is_response = self.focus.panel == Panel::Response;
         let is_response_vim_switch = is_response
             && matches!(
