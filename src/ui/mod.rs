@@ -561,20 +561,34 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let hints = match app.app_mode {
         AppMode::Navigation => "hjkl:nav  Enter:edit  i:insert  Ctrl+r:send  ?:help  q:quit",
         AppMode::Editing => match app.vim.mode {
-            VimMode::Normal => "hjkl:move  w/b/e:word  i/a:insert  v:visual  d/c/y:op  Esc:exit",
-            VimMode::Insert => "type text  Enter:send(URL)  Esc:normal",
-            VimMode::Visual => "motion:select  d:delete  y:yank  c:change  Esc:cancel",
+            VimMode::Normal => {
+                "hjkl:move  w/b/e:word  i/a:insert  v:visual  d/c/y:op  Cmd/Ctrl+C/V:clip  Esc:exit"
+            }
+            VimMode::Insert => "type text  Cmd/Ctrl+V:paste  Cmd/Ctrl+C:copy  Enter:send(URL)  Esc:normal",
+            VimMode::Visual => {
+                "motion:select  d:delete  y:yank  c:change  Cmd/Ctrl+C/V:clip  Esc:cancel"
+            }
             VimMode::Operator(_) => "motion:complete  Esc:cancel",
         },
     };
 
-    let status_line = Line::from(vec![
+    let mut status_spans = vec![
         Span::styled(mode_text, mode_style),
         Span::raw("  "),
         Span::raw(panel_info),
         Span::raw("  │  "),
         Span::styled(hints, Style::default().fg(Color::DarkGray)),
-    ]);
+    ];
+
+    if let Some(msg) = app.clipboard_toast_message() {
+        status_spans.push(Span::raw("  │  "));
+        status_spans.push(Span::styled(
+            format!("Clipboard: {msg}"),
+            Style::default().fg(Color::Yellow),
+        ));
+    }
+
+    let status_line = Line::from(status_spans);
 
     let status_bar = Paragraph::new(status_line)
         .style(Style::default().bg(Color::DarkGray).fg(Color::White));
@@ -629,6 +643,9 @@ fn render_help_overlay(frame: &mut Frame) {
         Line::from("  x/X         Delete char forward/backward"),
         Line::from("  D/C         Delete/change to end of line"),
         Line::from("  p           Paste"),
+        Line::from("  clipboard   y/d/c/x/D/C -> system; p from system"),
+        Line::from("  Cmd/Ctrl+C  Copy selection to system clipboard"),
+        Line::from("  Cmd/Ctrl+V  Paste from system clipboard"),
         Line::from("  u / Ctrl+r  Undo / redo"),
         Line::from("  Enter       Send request (URL field only)"),
         Line::from("  Esc         Exit to navigation mode"),

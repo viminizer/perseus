@@ -1,5 +1,6 @@
 use std::io::stdout;
 use std::panic;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::{
@@ -15,6 +16,7 @@ use reqwest::Client;
 use tokio::sync::mpsc;
 use tui_textarea::{Input, TextArea};
 
+use crate::clipboard::ClipboardProvider;
 use crate::vim::{Transition, Vim, VimMode};
 use crate::{http, ui};
 
@@ -143,6 +145,13 @@ pub struct RequestState {
     pub body_editor: TextArea<'static>,
 }
 
+#[derive(Clone, Copy)]
+enum YankTarget {
+    Request,
+    ResponseBody,
+    ResponseHeaders,
+}
+
 impl RequestState {
     pub fn new() -> Self {
         let mut url_editor = TextArea::default();
@@ -203,12 +212,19 @@ pub struct App {
     pub show_method_popup: bool,
     pub method_popup_index: usize,
     pub sidebar_visible: bool,
+    clipboard_toast: Option<(String, Instant)>,
     request_handle: Option<tokio::task::AbortHandle>,
+    clipboard: ClipboardProvider,
+    last_yank_request: String,
+    last_yank_response: String,
+    last_yank_response_headers: String,
     pub response_editor: TextArea<'static>,
     pub response_headers_editor: TextArea<'static>,
 }
 
 impl App {
+    const CLIPBOARD_TOAST_DURATION: Duration = Duration::from_secs(2);
+
     pub fn new() -> Self {
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(30))
@@ -231,7 +247,12 @@ impl App {
             show_method_popup: false,
             method_popup_index: 0,
             sidebar_visible: true,
+            clipboard_toast: None,
             request_handle: None,
+            clipboard: ClipboardProvider::new(),
+            last_yank_request: String::new(),
+            last_yank_response: String::new(),
+            last_yank_response_headers: String::new(),
             response_editor: {
                 let mut editor = TextArea::default();
                 editor.set_cursor_line_style(Style::default());
@@ -253,6 +274,241 @@ impl App {
 
         self.restore_terminal()?;
         result
+    }
+
+    pub fn clipboard_toast_message(&self) -> Option<&str> {
+        match &self.clipboard_toast {
+            Some((msg, at)) if at.elapsed() <= Self::CLIPBOARD_TOAST_DURATION => Some(msg.as_str()),
+            _ => None,
+        }
+    }
+
+    fn set_clipboard_toast(&mut self, msg: impl Into<String>) {
+        self.clipboard_toast = Some((msg.into(), Instant::now()));
+    }
+
+    fn active_yank_target(&self) -> Option<YankTarget> {
+        match self.focus.panel {
+            Panel::Response => match self.response_tab {
+                ResponseTab::Body => Some(YankTarget::ResponseBody),
+                ResponseTab::Headers => Some(YankTarget::ResponseHeaders),
+            },
+            Panel::Request => match self.focus.request_field {
+                RequestField::Url | RequestField::Headers | RequestField::Body => {
+                    Some(YankTarget::Request)
+                }
+                RequestField::Method | RequestField::Send => None,
+            },
+            Panel::Sidebar => None,
+        }
+    }
+
+    fn update_last_yank(&mut self, target: YankTarget, text: String) {
+        match target {
+            YankTarget::Request => self.last_yank_request = text,
+            YankTarget::ResponseBody => self.last_yank_response = text,
+            YankTarget::ResponseHeaders => self.last_yank_response_headers = text,
+        }
+    }
+
+    fn sync_clipboard_from_active_yank(&mut self) {
+        let mut new_yank: Option<String> = None;
+        match self.focus.panel {
+            Panel::Response => match self.response_tab {
+                ResponseTab::Body => {
+                    let yank = self.response_editor.yank_text();
+                    if self.last_yank_response != yank {
+                        self.last_yank_response = yank.clone();
+                        new_yank = Some(yank);
+                    }
+                }
+                ResponseTab::Headers => {
+                    let yank = self.response_headers_editor.yank_text();
+                    if self.last_yank_response_headers != yank {
+                        self.last_yank_response_headers = yank.clone();
+                        new_yank = Some(yank);
+                    }
+                }
+            },
+            Panel::Request => {
+                if let Some(textarea) = self.request.active_editor(self.focus.request_field) {
+                    let yank = textarea.yank_text();
+                    if self.last_yank_request != yank {
+                        self.last_yank_request = yank.clone();
+                        new_yank = Some(yank);
+                    }
+                }
+            }
+            Panel::Sidebar => {}
+        }
+
+        if let Some(yank) = new_yank {
+            if let Err(_) = self.clipboard.set_text(yank) {
+                self.set_clipboard_toast("Clipboard write failed");
+            }
+        }
+    }
+
+    fn handle_clipboard_paste_shortcut(&mut self) {
+        let target = match self.active_yank_target() {
+            Some(target) => target,
+            None => return,
+        };
+
+        let clipboard_text = match self.clipboard.get_text() {
+            Ok(text) => Some(text),
+            Err(_) => {
+                self.set_clipboard_toast("Clipboard read failed; using internal yank");
+                None
+            }
+        };
+
+        let mut last_yank_update: Option<(YankTarget, String)> = None;
+        let mut exit_to_normal = false;
+
+        match target {
+            YankTarget::Request => {
+                if let Some(textarea) = self.request.active_editor(self.focus.request_field) {
+                    if let Some(text) = clipboard_text.as_ref() {
+                        textarea.set_yank_text(text.clone());
+                        if self.vim.mode == VimMode::Insert {
+                            textarea.insert_str(text.as_str());
+                        } else {
+                            textarea.paste();
+                            if matches!(self.vim.mode, VimMode::Visual | VimMode::Operator(_)) {
+                                exit_to_normal = true;
+                            }
+                        }
+                        last_yank_update = Some((target, text.clone()));
+                    } else if self.vim.mode == VimMode::Insert {
+                        let fallback = textarea.yank_text();
+                        if !fallback.is_empty() {
+                            textarea.insert_str(fallback);
+                        }
+                    } else {
+                        textarea.paste();
+                        if matches!(self.vim.mode, VimMode::Visual | VimMode::Operator(_)) {
+                            exit_to_normal = true;
+                        }
+                    }
+                }
+            }
+            YankTarget::ResponseBody => {
+                let textarea = &mut self.response_editor;
+                if let Some(text) = clipboard_text.as_ref() {
+                    textarea.set_yank_text(text.clone());
+                    if self.vim.mode == VimMode::Insert {
+                        textarea.insert_str(text.as_str());
+                    } else {
+                        textarea.paste();
+                        if matches!(self.vim.mode, VimMode::Visual | VimMode::Operator(_)) {
+                            exit_to_normal = true;
+                        }
+                    }
+                    last_yank_update = Some((target, text.clone()));
+                } else if self.vim.mode == VimMode::Insert {
+                    let fallback = textarea.yank_text();
+                    if !fallback.is_empty() {
+                        textarea.insert_str(fallback);
+                    }
+                } else {
+                    textarea.paste();
+                    if matches!(self.vim.mode, VimMode::Visual | VimMode::Operator(_)) {
+                        exit_to_normal = true;
+                    }
+                }
+            }
+            YankTarget::ResponseHeaders => {
+                let textarea = &mut self.response_headers_editor;
+                if let Some(text) = clipboard_text.as_ref() {
+                    textarea.set_yank_text(text.clone());
+                    if self.vim.mode == VimMode::Insert {
+                        textarea.insert_str(text.as_str());
+                    } else {
+                        textarea.paste();
+                        if matches!(self.vim.mode, VimMode::Visual | VimMode::Operator(_)) {
+                            exit_to_normal = true;
+                        }
+                    }
+                    last_yank_update = Some((target, text.clone()));
+                } else if self.vim.mode == VimMode::Insert {
+                    let fallback = textarea.yank_text();
+                    if !fallback.is_empty() {
+                        textarea.insert_str(fallback);
+                    }
+                } else {
+                    textarea.paste();
+                    if matches!(self.vim.mode, VimMode::Visual | VimMode::Operator(_)) {
+                        exit_to_normal = true;
+                    }
+                }
+            }
+        }
+
+        if let Some((target, text)) = last_yank_update {
+            self.update_last_yank(target, text);
+        }
+
+        if exit_to_normal {
+            self.vim = Vim::new(VimMode::Normal);
+            self.update_terminal_cursor();
+        }
+    }
+
+    fn handle_clipboard_copy_shortcut(&mut self) {
+        let target = match self.active_yank_target() {
+            Some(target) => target,
+            None => return,
+        };
+
+        let mut yank: Option<String> = None;
+        let mut exit_visual = false;
+
+        match target {
+            YankTarget::Request => {
+                if let Some(textarea) = self.request.active_editor(self.focus.request_field) {
+                    if textarea.is_selecting() {
+                        textarea.copy();
+                        yank = Some(textarea.yank_text());
+                        if self.vim.mode == VimMode::Visual {
+                            exit_visual = true;
+                        }
+                    }
+                }
+            }
+            YankTarget::ResponseBody => {
+                let textarea = &mut self.response_editor;
+                if textarea.is_selecting() {
+                    textarea.copy();
+                    yank = Some(textarea.yank_text());
+                    if self.vim.mode == VimMode::Visual {
+                        exit_visual = true;
+                    }
+                }
+            }
+            YankTarget::ResponseHeaders => {
+                let textarea = &mut self.response_headers_editor;
+                if textarea.is_selecting() {
+                    textarea.copy();
+                    yank = Some(textarea.yank_text());
+                    if self.vim.mode == VimMode::Visual {
+                        exit_visual = true;
+                    }
+                }
+            }
+        }
+
+        if let Some(text) = yank {
+            self.update_last_yank(target, text.clone());
+            if let Err(_) = self.clipboard.set_text(text) {
+                self.set_clipboard_toast("Clipboard write failed");
+            }
+        }
+
+        if exit_visual {
+            self.vim = Vim::new(VimMode::Normal);
+            self.update_terminal_cursor();
+        }
     }
 
     fn install_panic_hook(&self) {
@@ -390,6 +646,8 @@ impl App {
                         self.response_headers_editor = TextArea::new(header_lines);
                         self.response_headers_editor
                             .set_cursor_line_style(Style::default());
+                        self.last_yank_response = self.response_editor.yank_text();
+                        self.last_yank_response_headers = self.response_headers_editor.yank_text();
                     }
                 }
                 self.request_handle = None;
@@ -632,6 +890,50 @@ impl App {
             }
         }
 
+        let is_clipboard_modifier = key.modifiers.contains(KeyModifiers::CONTROL)
+            || key.modifiers.contains(KeyModifiers::SUPER);
+
+        if is_clipboard_modifier && matches!(key.code, KeyCode::Char('v') | KeyCode::Char('V')) {
+            self.handle_clipboard_paste_shortcut();
+            return;
+        }
+
+        if is_clipboard_modifier && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C')) {
+            self.handle_clipboard_copy_shortcut();
+            return;
+        }
+
+        if matches!(self.vim.mode, VimMode::Normal | VimMode::Visual)
+            && key.modifiers.is_empty()
+            && key.code == KeyCode::Char('p')
+        {
+            if let Some(target) = self.active_yank_target() {
+                match self.clipboard.get_text() {
+                    Ok(text) => {
+                        match target {
+                            YankTarget::Request => {
+                                if let Some(textarea) =
+                                    self.request.active_editor(self.focus.request_field)
+                                {
+                                    textarea.set_yank_text(text.clone());
+                                }
+                            }
+                            YankTarget::ResponseBody => {
+                                self.response_editor.set_yank_text(text.clone());
+                            }
+                            YankTarget::ResponseHeaders => {
+                                self.response_headers_editor.set_yank_text(text.clone());
+                            }
+                        }
+                        self.update_last_yank(target, text);
+                    }
+                    Err(_) => {
+                        self.set_clipboard_toast("Clipboard read failed; using internal yank");
+                    }
+                }
+            }
+        }
+
         let input: Input = key.into();
 
         let transition = if is_response {
@@ -682,6 +984,7 @@ impl App {
                         .apply_transition(Transition::Mode(new_mode), textarea);
                 }
                 self.update_terminal_cursor();
+                self.sync_clipboard_from_active_yank();
             }
             Transition::Pending(pending_input) => {
                 if is_response {

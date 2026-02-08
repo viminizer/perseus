@@ -1,4 +1,5 @@
 mod app;
+mod clipboard;
 mod http;
 mod storage;
 mod ui;

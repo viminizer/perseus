@@ -212,7 +212,9 @@ impl Vim {
                 ctrl: false,
                 ..
             } => {
-                textarea.delete_next_char();
+                textarea.start_selection();
+                textarea.move_cursor(CursorMove::Forward);
+                textarea.cut();
                 Transition::Mode(VimMode::Normal)
             }
             Input {
@@ -220,22 +222,35 @@ impl Vim {
                 ctrl: false,
                 ..
             } => {
-                textarea.delete_char();
+                textarea.start_selection();
+                textarea.move_cursor(CursorMove::Back);
+                textarea.cut();
                 Transition::Mode(VimMode::Normal)
             }
             Input {
                 key: Key::Char('D'),
                 ..
             } => {
-                textarea.delete_line_by_end();
+                textarea.start_selection();
+                let before = textarea.cursor();
+                textarea.move_cursor(CursorMove::End);
+                if before == textarea.cursor() {
+                    textarea.move_cursor(CursorMove::Forward);
+                }
+                textarea.cut();
                 Transition::Mode(VimMode::Normal)
             }
             Input {
                 key: Key::Char('C'),
                 ..
             } => {
-                textarea.delete_line_by_end();
-                textarea.cancel_selection();
+                textarea.start_selection();
+                let before = textarea.cursor();
+                textarea.move_cursor(CursorMove::End);
+                if before == textarea.cursor() {
+                    textarea.move_cursor(CursorMove::Forward);
+                }
+                textarea.cut();
                 Transition::Mode(VimMode::Insert)
             }
             // Paste, undo, redo
