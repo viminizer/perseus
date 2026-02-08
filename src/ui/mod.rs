@@ -14,7 +14,7 @@ use crate::app::{
     App, AppMode, HttpMethod, Panel, RequestField, RequestTab, ResponseStatus, ResponseTab,
     SidebarPopup,
 };
-use crate::storage::collection::NodeKind;
+use crate::storage::NodeKind;
 use crate::vim::VimMode;
 
 pub fn render(frame: &mut Frame, app: &App) {
@@ -101,7 +101,7 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
             let mut spans: Vec<Span> = Vec::new();
             let mut text_len: usize = 0;
 
-            let mut push_span = |content: String, style: Style, spans: &mut Vec<Span>, len: &mut usize| {
+            let push_span = |content: String, style: Style, spans: &mut Vec<Span>, len: &mut usize| {
                 *len = len.saturating_add(content.chars().count());
                 spans.push(Span::styled(content, style));
             };

@@ -224,7 +224,6 @@ pub struct SidebarState {
 #[derive(Debug, Clone)]
 pub struct SidebarLine {
     pub id: Uuid,
-    pub depth: usize,
     pub prefix: String,
     pub marker: String,
     pub label: String,
@@ -576,7 +575,6 @@ impl App {
                 };
                 lines.push(SidebarLine {
                     id: *id,
-                    depth: 0,
                     prefix: String::new(),
                     marker: String::new(),
                     label: path,
@@ -620,7 +618,6 @@ impl App {
             };
             out.push(SidebarLine {
                 id,
-                depth: if is_root { 0 } else { ancestors_last.len() + 1 },
                 prefix,
                 marker: marker.to_string(),
                 label: node.name.clone(),
