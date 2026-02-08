@@ -69,6 +69,28 @@ pub struct ResponseData {
     pub duration_ms: u64,
 }
 
+fn is_json_like(headers: &[(String, String)], body: &str) -> bool {
+    let has_json_content_type = headers.iter().any(|(k, v)| {
+        k.eq_ignore_ascii_case("content-type") && v.to_ascii_lowercase().contains("application/json")
+    });
+    if has_json_content_type {
+        return true;
+    }
+    let trimmed = body.trim();
+    (trimmed.starts_with('{') && trimmed.ends_with('}'))
+        || (trimmed.starts_with('[') && trimmed.ends_with(']'))
+}
+
+fn format_json_if_possible(headers: &[(String, String)], body: &str) -> String {
+    if !is_json_like(headers, body) {
+        return body.to_string();
+    }
+    match serde_json::from_str::<Value>(body) {
+        Ok(value) => serde_json::to_string_pretty(&value).unwrap_or_else(|_| body.to_string()),
+        Err(_) => body.to_string(),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AppMode {
     #[default]
@@ -1565,8 +1587,9 @@ impl App {
                     self.response_scroll = 0;
                     self.response_tab = ResponseTab::Body;
                     if let ResponseStatus::Success(ref data) = self.response {
+                        let formatted_body = format_json_if_possible(&data.headers, &data.body);
                         let mut lines: Vec<String> =
-                            data.body.lines().map(String::from).collect();
+                            formatted_body.lines().map(String::from).collect();
                         if lines.is_empty() {
                             lines.push(String::new());
                         }
