@@ -226,7 +226,10 @@ pub struct SidebarLine {
     pub id: Uuid,
     pub depth: usize,
     pub prefix: String,
-    pub display: String,
+    pub marker: String,
+    pub label: String,
+    pub kind: NodeKind,
+    pub method: Option<HttpMethod>,
 }
 
 pub struct RequestState {
@@ -529,15 +532,26 @@ impl App {
             }
             if node.name.to_lowercase().contains(&query) {
                 let path = self.sidebar_tree.path_for(*id).join("/");
+                let method = if node.kind == NodeKind::Request {
+                    self.collection
+                        .get_item(*id)
+                        .and_then(|item| item.request.as_ref())
+                        .map(|request| HttpMethod::from_str(&request.method))
+                } else {
+                    None
+                };
                 lines.push(SidebarLine {
                     id: *id,
                     depth: 0,
                     prefix: String::new(),
-                    display: path,
+                    marker: String::new(),
+                    label: path,
+                    kind: node.kind,
+                    method,
                 });
             }
         }
-        lines.sort_by(|a, b| a.display.to_lowercase().cmp(&b.display.to_lowercase()));
+        lines.sort_by(|a, b| a.label.to_lowercase().cmp(&b.label.to_lowercase()));
         lines
     }
 
@@ -553,11 +567,18 @@ impl App {
             let is_expanded = self.sidebar.expanded.contains(&id);
             let marker = match node.kind {
                 NodeKind::Project | NodeKind::Folder => {
-                    if is_expanded { "v" } else { ">" }
+                    if is_expanded { "▾" } else { "▸" }
                 }
-                NodeKind::Request => "*",
+                NodeKind::Request => "•",
             };
-            let display = format!("{} {}", marker, node.name);
+            let method = if node.kind == NodeKind::Request {
+                self.collection
+                    .get_item(node.id)
+                    .and_then(|item| item.request.as_ref())
+                    .map(|request| HttpMethod::from_str(&request.method))
+            } else {
+                None
+            };
             let prefix = if is_root {
                 String::new()
             } else {
@@ -567,7 +588,10 @@ impl App {
                 id,
                 depth: if is_root { 0 } else { ancestors_last.len() + 1 },
                 prefix,
-                display,
+                marker: marker.to_string(),
+                label: node.name.clone(),
+                kind: node.kind,
+                method,
             });
             if matches!(node.kind, NodeKind::Project | NodeKind::Folder) && is_expanded {
                 let mut next_ancestors = ancestors_last.to_vec();

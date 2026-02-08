@@ -14,6 +14,7 @@ use crate::app::{
     App, AppMode, HttpMethod, Panel, RequestField, RequestTab, ResponseStatus, ResponseTab,
     SidebarPopup,
 };
+use crate::storage::collection::NodeKind;
 use crate::vim::VimMode;
 
 pub fn render(frame: &mut Frame, app: &App) {
@@ -91,22 +92,59 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
         )));
     } else {
         for item in items {
-            let text = format!("{}{}", item.prefix, item.display);
-            let padded = if width > 0 {
-                format!("{:<width$}", text, width = width.saturating_sub(1))
-            } else {
-                text
-            };
-            let style = if Some(item.id) == selected_id {
+            let is_selected = Some(item.id) == selected_id;
+            let base_style = if is_selected {
                 Style::default().bg(Color::DarkGray).fg(Color::White)
             } else {
                 Style::default().fg(Color::White)
             };
-            lines.push(Line::from(Span::styled(padded, style)));
+            let mut spans: Vec<Span> = Vec::new();
+            let mut text_len: usize = 0;
+
+            let mut push_span = |content: String, style: Style, spans: &mut Vec<Span>, len: &mut usize| {
+                *len = len.saturating_add(content.chars().count());
+                spans.push(Span::styled(content, style));
+            };
+
+            if !item.prefix.is_empty() {
+                push_span(item.prefix.clone(), base_style, &mut spans, &mut text_len);
+            }
+
+            match item.kind {
+                NodeKind::Request => {
+                    if let Some(method) = item.method {
+                        let method_style = base_style.fg(method_color(method));
+                        push_span(
+                            method.as_str().to_string(),
+                            method_style,
+                            &mut spans,
+                            &mut text_len,
+                        );
+                        push_span(" ".to_string(), base_style, &mut spans, &mut text_len);
+                    }
+                    push_span(item.label.clone(), base_style, &mut spans, &mut text_len);
+                }
+                NodeKind::Folder | NodeKind::Project => {
+                    let label = if item.marker.is_empty() {
+                        item.label.clone()
+                    } else {
+                        format!("{} {}", item.marker, item.label)
+                    };
+                    push_span(label, base_style, &mut spans, &mut text_len);
+                }
+            }
+
+            let max_width = width.saturating_sub(1);
+            if max_width > text_len {
+                let padding = " ".repeat(max_width - text_len);
+                push_span(padding, base_style, &mut spans, &mut text_len);
+            }
+
+            lines.push(Line::from(spans));
         }
     }
 
-    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: true });
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
     frame.render_widget(paragraph, inner);
 
     if let Some(popup) = &app.sidebar.popup {
