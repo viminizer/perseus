@@ -701,6 +701,13 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                     .add_modifier(ratatui::style::Modifier::BOLD),
             ),
         },
+        AppMode::Sidebar => (
+            " SIDEBAR ",
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::LightGreen)
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ),
     };
 
     let panel_info = match app.focus.panel {
@@ -718,9 +725,12 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         Panel::Response => format!("Response > {}", app.response_tab.label()),
     };
 
-    let hints = if app.focus.panel == Panel::Sidebar && matches!(app.app_mode, AppMode::Navigation)
-    {
-        "j/k:move  a:add  r:rename  d:del  m:move  /:search  Enter:open  Ctrl+p:projects"
+    let hints = if app.focus.panel == Panel::Sidebar {
+        if matches!(app.app_mode, AppMode::Sidebar) {
+            "j/k:move  a:add  r:rename  d:del  m:move  /:search  Enter:open  Esc:exit"
+        } else {
+            "Enter/i:edit  hjkl:nav  Ctrl+p:projects  Ctrl+e:toggle"
+        }
     } else {
         match app.app_mode {
             AppMode::Navigation => {
@@ -738,6 +748,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 }
                 VimMode::Operator(_) => "motion:complete  Esc:cancel",
             },
+            AppMode::Sidebar => "j/k:move  a:add  r:rename  d:del  m:move  /:search  Enter:open  Esc:exit",
         }
     };
 
@@ -802,6 +813,8 @@ fn render_help_overlay(frame: &mut Frame) {
             "Sidebar",
             Style::default().fg(Color::Yellow),
         )),
+        Line::from("  Enter / i   Edit sidebar"),
+        Line::from("  Esc         Return to navigation"),
         Line::from("  j/k or ↑/↓  Move selection"),
         Line::from("  h           Collapse / parent"),
         Line::from("  l / Enter   Expand / open request"),

@@ -74,6 +74,7 @@ pub enum AppMode {
     #[default]
     Navigation,
     Editing,
+    Sidebar,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -978,7 +979,10 @@ impl App {
             return;
         };
         match node.kind {
-            NodeKind::Request => self.open_request(node.id),
+            NodeKind::Request => {
+                self.open_request(node.id);
+                self.app_mode = AppMode::Navigation;
+            }
             NodeKind::Folder | NodeKind::Project => {
                 if !self.sidebar.expanded.contains(&node.id) {
                     self.sidebar.expanded.insert(node.id);
@@ -1511,6 +1515,7 @@ impl App {
         match self.app_mode {
             AppMode::Navigation => self.handle_navigation_mode(key, tx),
             AppMode::Editing => self.handle_editing_mode(key, tx),
+            AppMode::Sidebar => self.handle_sidebar_mode(key),
         }
     }
 
@@ -1619,11 +1624,6 @@ impl App {
             return;
         }
 
-        if in_sidebar {
-            self.handle_sidebar_key(key);
-            return;
-        }
-
         // Ctrl+h/l: horizontal navigation in input row
         if in_request && key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
@@ -1674,7 +1674,9 @@ impl App {
             }
             // Enter: activate focused element
             KeyCode::Enter => {
-                if in_request {
+                if in_sidebar {
+                    self.app_mode = AppMode::Sidebar;
+                } else if in_request {
                     match self.focus.request_field {
                         RequestField::Method => {
                             self.method_popup_index = self.request.method.index();
@@ -1699,7 +1701,9 @@ impl App {
             }
             // i on editable field: enter vim insert mode directly
             KeyCode::Char('i') => {
-                if in_request && self.is_editable_field() {
+                if in_sidebar {
+                    self.app_mode = AppMode::Sidebar;
+                } else if in_request && self.is_editable_field() {
                     self.enter_editing(VimMode::Insert);
                 } else if in_response
                     && matches!(self.response, ResponseStatus::Success(_))
@@ -1713,6 +1717,33 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn handle_sidebar_mode(&mut self, key: KeyEvent) {
+        if self.show_help {
+            if key.code == KeyCode::Char('?') || key.code == KeyCode::Esc {
+                self.show_help = false;
+            }
+            return;
+        }
+
+        if key.code == KeyCode::Esc {
+            if self.sidebar.popup.is_some() {
+                self.sidebar.popup = None;
+            }
+            if !self.sidebar.search_query.is_empty() {
+                self.sidebar.search_query.clear();
+            }
+            self.app_mode = AppMode::Navigation;
+            return;
+        }
+
+        if self.sidebar.popup.is_some() {
+            self.handle_sidebar_popup(key);
+            return;
+        }
+
+        self.handle_sidebar_key(key);
     }
 
     fn handle_editing_mode(
