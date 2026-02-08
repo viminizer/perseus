@@ -21,8 +21,8 @@ use uuid::Uuid;
 
 use crate::clipboard::ClipboardProvider;
 use crate::storage::{
-    self, CollectionStore, NodeKind, PostmanHeader, PostmanRequest, ProjectInfo, ProjectTree,
-    TreeNode,
+    self, CollectionStore, NodeKind, PostmanHeader, PostmanItem, PostmanRequest, ProjectInfo,
+    ProjectTree, TreeNode,
 };
 use crate::vim::{Transition, Vim, VimMode};
 use crate::{http, ui};
@@ -387,6 +387,16 @@ impl App {
             active_project_id = project_list[0].id;
         }
 
+        let mut created_request_id: Option<Uuid> = None;
+        if !collection_has_requests(&collection.collection.item) {
+            let req = PostmanRequest::new("GET".to_string(), String::new(), Vec::new(), None);
+            let new_id = collection
+                .add_request(active_project_id, "New Request".to_string(), req)
+                .map_err(anyhow::Error::msg)?;
+            collection.save().map_err(anyhow::Error::msg)?;
+            created_request_id = Some(new_id);
+        }
+
         let sidebar_width = clamp_sidebar_width(ui_state.sidebar_width);
         let sidebar_tree = collection
             .build_tree(active_project_id)
@@ -406,7 +416,7 @@ impl App {
             .write_all_request_files()
             .map_err(anyhow::Error::msg)?;
 
-        let app = Self {
+        let mut app = Self {
             running: true,
             request: RequestState::new(),
             focus: FocusState::default(),
@@ -447,6 +457,12 @@ impl App {
                 editor
             },
         };
+
+        if let Some(request_id) = created_request_id {
+            app.sidebar.selection_id = Some(request_id);
+            app.expand_sidebar_ancestors(request_id);
+            app.open_request(request_id);
+        }
 
         app.persist_ui_state();
         Ok(app)
@@ -511,6 +527,24 @@ impl App {
                 break;
             }
         }
+    }
+
+    fn focus_sidebar(&mut self) {
+        if !self.sidebar_visible {
+            self.sidebar_visible = true;
+        }
+        if let Some(request_id) = self.current_request_id {
+            if self.sidebar_tree.nodes.contains_key(&request_id) {
+                self.sidebar.selection_id = Some(request_id);
+                self.expand_sidebar_ancestors(request_id);
+            } else {
+                self.sidebar.selection_id = Some(self.active_project_id);
+            }
+        } else {
+            self.sidebar.selection_id = Some(self.active_project_id);
+        }
+        self.focus.panel = Panel::Sidebar;
+        self.app_mode = AppMode::Sidebar;
     }
 
     pub fn sidebar_lines(&self) -> Vec<SidebarLine> {
@@ -1635,17 +1669,7 @@ impl App {
         if key.code == KeyCode::Char('e') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.sidebar_visible = !self.sidebar_visible;
             if self.sidebar_visible {
-                if let Some(request_id) = self.current_request_id {
-                    if self.sidebar_tree.nodes.contains_key(&request_id) {
-                        self.sidebar.selection_id = Some(request_id);
-                        self.expand_sidebar_ancestors(request_id);
-                    } else {
-                        self.sidebar.selection_id = Some(self.active_project_id);
-                    }
-                } else {
-                    self.sidebar.selection_id = Some(self.active_project_id);
-                }
-                self.focus.panel = Panel::Sidebar;
+                self.focus_sidebar();
             } else {
                 if self.focus.panel == Panel::Sidebar {
                     self.focus.panel = Panel::Request;
@@ -1655,6 +1679,11 @@ impl App {
                     self.app_mode = AppMode::Navigation;
                 }
             }
+            return;
+        }
+
+        if key.code == KeyCode::Char('e') && key.modifiers.is_empty() {
+            self.focus_sidebar();
             return;
         }
 
@@ -2119,7 +2148,7 @@ impl App {
     fn prev_horizontal(&mut self) {
         match self.focus.panel {
             Panel::Request => {
-                if self.sidebar_visible && self.focus.request_field == RequestField::Method {
+                if self.sidebar_visible {
                     self.focus.panel = Panel::Sidebar;
                 } else {
                     self.focus.request_field = match self.focus.request_field {
@@ -2131,7 +2160,11 @@ impl App {
                 }
             }
             Panel::Sidebar => {}
-            Panel::Response => {}
+            Panel::Response => {
+                if self.sidebar_visible {
+                    self.focus.panel = Panel::Sidebar;
+                }
+            }
         }
     }
 
@@ -2227,6 +2260,18 @@ fn sidebar_tree_prefix(ancestors_last: &[bool], is_last: bool) -> String {
         prefix.push_str("├─ ");
     }
     prefix
+}
+
+fn collection_has_requests(items: &[PostmanItem]) -> bool {
+    for item in items {
+        if item.request.is_some() {
+            return true;
+        }
+        if !item.item.is_empty() && collection_has_requests(&item.item) {
+            return true;
+        }
+    }
+    false
 }
 
 fn clamp_sidebar_width(value: u16) -> u16 {

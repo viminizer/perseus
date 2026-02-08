@@ -776,7 +776,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         match app.app_mode {
             AppMode::Navigation => {
-                "hjkl:nav  Enter:edit  i:insert  Ctrl+r:send  Ctrl+s:save  ?:help  q:quit"
+                "hjkl:nav  e:sidebar  Enter:edit  i:insert  Ctrl+r:send  Ctrl+s:save  Ctrl+e:toggle  ?:help  q:quit"
             }
             AppMode::Editing => match app.vim.mode {
                 VimMode::Normal => {
@@ -843,10 +843,11 @@ fn render_help_overlay(frame: &mut Frame) {
         )),
         Line::from("  h/j/k/l     Move focus across UI"),
         Line::from("  Arrow keys  Same as h/j/k/l"),
+        Line::from("  e           Focus sidebar"),
         Line::from("  Enter       Activate field (vim normal mode)"),
         Line::from("  i           Enter field (vim insert mode)"),
         Line::from("  Ctrl+r      Send request"),
-        Line::from("  Ctrl+e      Toggle sidebar"),
+        Line::from("  Ctrl+e      Toggle sidebar (enter sidebar when opening)"),
         Line::from("  Ctrl+p      Project switcher"),
         Line::from("  Ctrl+s      Save request"),
         Line::from("  q / Esc     Quit"),
