@@ -495,6 +495,20 @@ impl App {
         }
     }
 
+    fn expand_sidebar_ancestors(&mut self, id: Uuid) {
+        let mut current = Some(id);
+        while let Some(node_id) = current {
+            if let Some(node) = self.sidebar_tree.node(node_id) {
+                if matches!(node.kind, NodeKind::Folder | NodeKind::Project) {
+                    self.sidebar.expanded.insert(node_id);
+                }
+                current = node.parent_id;
+            } else {
+                break;
+            }
+        }
+    }
+
     pub fn sidebar_lines(&self) -> Vec<SidebarLine> {
         if !self.sidebar.search_query.is_empty() {
             return self.sidebar_search_lines();
@@ -1570,9 +1584,26 @@ impl App {
         // Ctrl+E toggles sidebar
         if key.code == KeyCode::Char('e') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.sidebar_visible = !self.sidebar_visible;
-            if !self.sidebar_visible && self.focus.panel == Panel::Sidebar {
-                self.focus.panel = Panel::Request;
-                self.focus.request_field = RequestField::Url;
+            if self.sidebar_visible {
+                if let Some(request_id) = self.current_request_id {
+                    if self.sidebar_tree.nodes.contains_key(&request_id) {
+                        self.sidebar.selection_id = Some(request_id);
+                        self.expand_sidebar_ancestors(request_id);
+                    } else {
+                        self.sidebar.selection_id = Some(self.active_project_id);
+                    }
+                } else {
+                    self.sidebar.selection_id = Some(self.active_project_id);
+                }
+                self.focus.panel = Panel::Sidebar;
+            } else {
+                if self.focus.panel == Panel::Sidebar {
+                    self.focus.panel = Panel::Request;
+                    self.focus.request_field = RequestField::Url;
+                }
+                if matches!(self.app_mode, AppMode::Sidebar) {
+                    self.app_mode = AppMode::Navigation;
+                }
             }
             return;
         }

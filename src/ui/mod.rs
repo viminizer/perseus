@@ -40,9 +40,14 @@ pub fn render(frame: &mut Frame, app: &App) {
 }
 
 fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
+    let border_color = if app.focus.panel == Panel::Sidebar {
+        Color::Green
+    } else {
+        Color::DarkGray
+    };
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray))
+        .border_style(Style::default().fg(border_color))
         .title("Explorer");
 
     let inner = block.inner(area);
