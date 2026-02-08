@@ -24,7 +24,7 @@ pub fn find_project_root() -> Option<PathBuf> {
 }
 
 pub fn storage_dir() -> Option<PathBuf> {
-    find_project_root().map(|root| root.join(".perseus").join("requests"))
+    find_project_root().map(|root| root.join(".perseus"))
 }
 
 pub fn ensure_storage_dir() -> Result<PathBuf, String> {
@@ -33,4 +33,16 @@ pub fn ensure_storage_dir() -> Result<PathBuf, String> {
     )?;
     fs::create_dir_all(&dir).map_err(|e| format!("Failed to create storage directory: {}", e))?;
     Ok(dir)
+}
+
+pub fn collection_path() -> Option<PathBuf> {
+    storage_dir().map(|root| root.join("collection.json"))
+}
+
+pub fn requests_dir() -> Option<PathBuf> {
+    storage_dir().map(|root| root.join("requests"))
+}
+
+pub fn ui_state_path() -> Option<PathBuf> {
+    storage_dir().map(|root| root.join("ui.json"))
 }

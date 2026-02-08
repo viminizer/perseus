@@ -8,7 +8,7 @@ pub struct AppLayout {
 }
 
 impl AppLayout {
-    pub fn new(area: Rect, sidebar_visible: bool) -> Self {
+    pub fn new(area: Rect, sidebar_visible: bool, sidebar_width: u16) -> Self {
         let vertical = Layout::vertical([
             Constraint::Min(1),
             Constraint::Length(1),
@@ -19,8 +19,8 @@ impl AppLayout {
         let status_bar = vertical[1];
 
         let (sidebar_area, content_area) = if sidebar_visible {
-            // Split: sidebar (20 chars or 15%) | main content
-            let sidebar_width = std::cmp::min(20, main_area.width * 15 / 100);
+            let max_width = main_area.width.saturating_sub(10);
+            let sidebar_width = sidebar_width.min(max_width);
             let with_sidebar = Layout::horizontal([
                 Constraint::Length(sidebar_width),
                 Constraint::Min(1),

@@ -76,10 +76,5 @@ impl SavedRequest {
 }
 
 fn generate_id() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis();
-    format!("req_{}", timestamp)
+    uuid::Uuid::new_v4().to_string()
 }
