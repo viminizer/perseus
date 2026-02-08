@@ -9,6 +9,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
     Frame,
 };
+use unicode_width::UnicodeWidthChar;
 
 use crate::app::{
     App, AppMode, HttpMethod, Panel, RequestField, RequestTab, ResponseStatus, ResponseTab,
@@ -477,7 +478,6 @@ fn render_response_panel(frame: &mut Frame, app: &App, area: Rect) {
                 ResponseTab::Headers => render_response_headers(
                     frame,
                     app,
-                    data,
                     response_layout.content_area,
                     app.response_scroll,
                     editing_response,
@@ -567,48 +567,65 @@ fn render_response_body(
     scroll_offset: u16,
     editing: bool,
 ) {
-    if editing {
-        frame.render_widget(&app.response_editor, area);
+    let body_text = app.response_editor.lines().join("\n");
+    let is_json = is_json_response(&data.headers, &body_text);
+    let body_lines = if is_json {
+        colorize_json(&body_text)
     } else {
-        let is_json = is_json_response(&data.headers, &data.body);
-        let body_lines = if is_json {
-            colorize_json(&data.body)
-        } else {
-            data.body
-                .lines()
-                .map(|l| Line::from(l.to_string()))
-                .collect()
-        };
-        let body_widget = Paragraph::new(body_lines).scroll((scroll_offset, 0));
-        frame.render_widget(body_widget, area);
-    }
+        app.response_editor
+            .lines()
+            .iter()
+            .map(|l| Line::from(l.clone()))
+            .collect()
+    };
+    let cursor = if editing {
+        Some(app.response_editor.cursor())
+    } else {
+        None
+    };
+    let selection = if editing {
+        app.response_editor.selection_range()
+    } else {
+        None
+    };
+    render_wrapped_response(
+        frame,
+        area,
+        body_lines,
+        cursor,
+        selection,
+        scroll_offset,
+        editing,
+    );
 }
 
 fn render_response_headers(
     frame: &mut Frame,
     app: &App,
-    data: &crate::app::ResponseData,
     area: Rect,
     scroll_offset: u16,
     editing: bool,
 ) {
-    if editing {
-        frame.render_widget(&app.response_headers_editor, area);
+    let header_lines = colorize_headers(app.response_headers_editor.lines());
+    let cursor = if editing {
+        Some(app.response_headers_editor.cursor())
     } else {
-        let headers_text: Vec<Line> = data
-            .headers
-            .iter()
-            .map(|(k, v)| {
-                Line::from(vec![
-                    Span::styled(format!("{}: ", k), Style::default().fg(Color::Cyan)),
-                    Span::raw(v),
-                ])
-            })
-            .collect();
-
-        let headers_widget = Paragraph::new(headers_text).scroll((scroll_offset, 0));
-        frame.render_widget(headers_widget, area);
-    }
+        None
+    };
+    let selection = if editing {
+        app.response_headers_editor.selection_range()
+    } else {
+        None
+    };
+    render_wrapped_response(
+        frame,
+        area,
+        header_lines,
+        cursor,
+        selection,
+        scroll_offset,
+        editing,
+    );
 }
 
 fn is_json_response(headers: &[(String, String)], body: &str) -> bool {
@@ -702,6 +719,193 @@ fn colorize_token(token: &str) -> Span<'static> {
     } else {
         Span::raw(token.to_string())
     }
+}
+
+fn colorize_headers(lines: &[String]) -> Vec<Line<'static>> {
+    lines
+        .iter()
+        .map(|line| {
+            if let Some((key, rest)) = line.split_once(':') {
+                Line::from(vec![
+                    Span::styled(format!("{}:", key), Style::default().fg(Color::Cyan)),
+                    Span::raw(rest.to_string()),
+                ])
+            } else {
+                Line::from(line.clone())
+            }
+        })
+        .collect()
+}
+
+fn render_wrapped_response(
+    frame: &mut Frame,
+    area: Rect,
+    lines: Vec<Line<'static>>,
+    cursor: Option<(usize, usize)>,
+    selection: Option<((usize, usize), (usize, usize))>,
+    scroll_offset: u16,
+    show_cursor: bool,
+) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+
+    let width = area.width as usize;
+    let (wrapped_lines, cursor_pos) =
+        wrap_lines_with_cursor(lines, width, cursor, selection);
+
+    let height = area.height as usize;
+    let mut scroll_y = scroll_offset as usize;
+    if show_cursor {
+        if let Some((_, cursor_y)) = cursor_pos {
+            if cursor_y >= scroll_y + height {
+                scroll_y = cursor_y.saturating_sub(height.saturating_sub(1));
+            } else if cursor_y < scroll_y {
+                scroll_y = cursor_y;
+            }
+        }
+    }
+
+    let visible_lines: Vec<Line<'static>> = wrapped_lines
+        .into_iter()
+        .skip(scroll_y)
+        .take(height)
+        .collect();
+
+    let body_widget = Paragraph::new(visible_lines);
+    frame.render_widget(body_widget, area);
+
+    if show_cursor {
+        if let Some((cursor_x, cursor_y)) = cursor_pos {
+            if cursor_y >= scroll_y {
+                let rel_y = cursor_y - scroll_y;
+                if rel_y < height {
+                    let max_x = area.width.saturating_sub(1) as usize;
+                    let clamped_x = cursor_x.min(max_x);
+                    let x = area.x.saturating_add(clamped_x as u16);
+                    let y = area.y.saturating_add(rel_y as u16);
+                    frame.set_cursor(x, y);
+                }
+            }
+        }
+    }
+}
+
+fn wrap_lines_with_cursor(
+    lines: Vec<Line<'static>>,
+    width: usize,
+    cursor: Option<(usize, usize)>,
+    selection: Option<((usize, usize), (usize, usize))>,
+) -> (Vec<Line<'static>>, Option<(usize, usize)>) {
+    let width = width.max(1);
+    let mut wrapped_lines = Vec::new();
+    let mut cursor_pos: Option<(usize, usize)> = None;
+
+    for (row, line) in lines.into_iter().enumerate() {
+        let line_len = line_char_len(&line);
+        let selection_range = selection_range_for_row(selection, row, line_len);
+        let cursor_col = cursor.and_then(|(r, c)| if r == row { Some(c) } else { None });
+        let (parts, line_cursor) =
+            wrap_line_spans_with_cursor(&line.spans, width, cursor_col, selection_range);
+        if let Some((line_idx, col)) = line_cursor {
+            cursor_pos = Some((col, wrapped_lines.len() + line_idx));
+        }
+        for spans in parts {
+            wrapped_lines.push(Line::from(spans));
+        }
+    }
+
+    if wrapped_lines.is_empty() {
+        wrapped_lines.push(Line::from(""));
+    }
+
+    (wrapped_lines, cursor_pos)
+}
+
+fn line_char_len(line: &Line<'static>) -> usize {
+    line.spans
+        .iter()
+        .map(|span| span.content.chars().count())
+        .sum()
+}
+
+fn selection_range_for_row(
+    selection: Option<((usize, usize), (usize, usize))>,
+    row: usize,
+    line_len: usize,
+) -> Option<(usize, usize)> {
+    let ((start_row, start_col), (end_row, end_col)) = selection?;
+    if row < start_row || row > end_row {
+        return None;
+    }
+    let start = if row == start_row { start_col } else { 0 };
+    let end = if row == end_row { end_col } else { line_len };
+    if start >= end {
+        None
+    } else {
+        Some((start, end))
+    }
+}
+
+fn wrap_line_spans_with_cursor(
+    spans: &[Span<'static>],
+    width: usize,
+    cursor_col: Option<usize>,
+    selection: Option<(usize, usize)>,
+) -> (Vec<Vec<Span<'static>>>, Option<(usize, usize)>) {
+    let width = width.max(1);
+    let mut lines: Vec<Vec<Span<'static>>> = Vec::new();
+    let mut current: Vec<Span<'static>> = Vec::new();
+    let mut current_width = 0usize;
+    let mut cursor_pos: Option<(usize, usize)> = None;
+    let mut char_index = 0usize;
+
+    for span in spans {
+        for ch in span.content.chars() {
+            if cursor_col == Some(char_index) && cursor_pos.is_none() {
+                cursor_pos = Some((lines.len(), current_width));
+            }
+
+            let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+            if current_width + ch_width > width && current_width > 0 {
+                lines.push(std::mem::take(&mut current));
+                current_width = 0;
+            }
+
+            let mut style = span.style;
+            if let Some((sel_start, sel_end)) = selection {
+                if char_index >= sel_start && char_index < sel_end {
+                    style = style.bg(Color::LightBlue);
+                }
+            }
+
+            push_span_char(&mut current, style, ch);
+            current_width += ch_width;
+            char_index += 1;
+        }
+    }
+
+    if cursor_col == Some(char_index) && cursor_pos.is_none() {
+        cursor_pos = Some((lines.len(), current_width));
+    }
+
+    if current.is_empty() && lines.is_empty() {
+        lines.push(Vec::new());
+    } else {
+        lines.push(current);
+    }
+
+    (lines, cursor_pos)
+}
+
+fn push_span_char(spans: &mut Vec<Span<'static>>, style: Style, ch: char) {
+    if let Some(last) = spans.last_mut() {
+        if last.style == style {
+            last.content.to_mut().push(ch);
+            return;
+        }
+    }
+    spans.push(Span::styled(ch.to_string(), style));
 }
 
 fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
