@@ -225,6 +225,7 @@ pub struct SidebarState {
 pub struct SidebarLine {
     pub id: Uuid,
     pub depth: usize,
+    pub prefix: String,
     pub display: String,
 }
 
@@ -515,7 +516,7 @@ impl App {
         }
 
         let mut lines = Vec::new();
-        self.collect_sidebar_lines(self.sidebar_tree.root_id, 0, &mut lines);
+        self.collect_sidebar_lines(self.sidebar_tree.root_id, &[], true, true, &mut lines);
         lines
     }
 
@@ -531,6 +532,7 @@ impl App {
                 lines.push(SidebarLine {
                     id: *id,
                     depth: 0,
+                    prefix: String::new(),
                     display: path,
                 });
             }
@@ -539,7 +541,14 @@ impl App {
         lines
     }
 
-    fn collect_sidebar_lines(&self, id: Uuid, depth: usize, out: &mut Vec<SidebarLine>) {
+    fn collect_sidebar_lines(
+        &self,
+        id: Uuid,
+        ancestors_last: &[bool],
+        is_last: bool,
+        is_root: bool,
+        out: &mut Vec<SidebarLine>,
+    ) {
         if let Some(node) = self.sidebar_tree.node(id) {
             let is_expanded = self.sidebar.expanded.contains(&id);
             let marker = match node.kind {
@@ -549,14 +558,31 @@ impl App {
                 NodeKind::Request => "*",
             };
             let display = format!("{} {}", marker, node.name);
+            let prefix = if is_root {
+                String::new()
+            } else {
+                sidebar_tree_prefix(ancestors_last, is_last)
+            };
             out.push(SidebarLine {
                 id,
-                depth,
+                depth: if is_root { 0 } else { ancestors_last.len() + 1 },
+                prefix,
                 display,
             });
             if matches!(node.kind, NodeKind::Project | NodeKind::Folder) && is_expanded {
-                for child in &node.children {
-                    self.collect_sidebar_lines(*child, depth + 1, out);
+                let mut next_ancestors = ancestors_last.to_vec();
+                if !is_root {
+                    next_ancestors.push(is_last);
+                }
+                for (index, child) in node.children.iter().enumerate() {
+                    let child_is_last = index + 1 == node.children.len();
+                    self.collect_sidebar_lines(
+                        *child,
+                        &next_ancestors,
+                        child_is_last,
+                        false,
+                        out,
+                    );
                 }
             }
         }
@@ -2160,6 +2186,23 @@ impl App {
     fn prev_response_tab(&mut self) {
         self.next_response_tab();
     }
+}
+
+fn sidebar_tree_prefix(ancestors_last: &[bool], is_last: bool) -> String {
+    let mut prefix = String::new();
+    for ancestor_last in ancestors_last {
+        if *ancestor_last {
+            prefix.push_str("  ");
+        } else {
+            prefix.push_str("│ ");
+        }
+    }
+    if is_last {
+        prefix.push_str("└─ ");
+    } else {
+        prefix.push_str("├─ ");
+    }
+    prefix
 }
 
 fn clamp_sidebar_width(value: u16) -> u16 {

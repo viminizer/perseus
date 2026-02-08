@@ -91,8 +91,7 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
         )));
     } else {
         for item in items {
-            let indent = "  ".repeat(item.depth);
-            let text = format!("{}{}", indent, item.display);
+            let text = format!("{}{}", item.prefix, item.display);
             let padded = if width > 0 {
                 format!("{:<width$}", text, width = width.saturating_sub(1))
             } else {
