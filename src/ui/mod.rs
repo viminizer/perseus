@@ -9,16 +9,17 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
     Frame,
 };
+use tui_textarea::TextArea;
 use unicode_width::UnicodeWidthChar;
 
 use crate::app::{
-    App, AppMode, HttpMethod, Panel, RequestField, RequestTab, ResponseStatus, ResponseTab,
-    SidebarPopup,
+    App, AppMode, HttpMethod, Panel, RequestField, RequestTab, ResponseBodyRenderCache,
+    ResponseHeadersRenderCache, ResponseStatus, ResponseTab, SidebarPopup, WrapCache,
 };
 use crate::storage::NodeKind;
 use crate::vim::VimMode;
 
-pub fn render(frame: &mut Frame, app: &App) {
+pub fn render(frame: &mut Frame, app: &mut App) {
     let layout = AppLayout::new(frame.area(), app.sidebar_visible, app.sidebar_width);
     let request_split = Layout::vertical([Constraint::Length(3), Constraint::Min(3)])
         .split(layout.request_area);
@@ -416,7 +417,7 @@ fn render_request_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(tabs_widget, area);
 }
 
-fn render_response_panel(frame: &mut Frame, app: &App, area: Rect) {
+fn render_response_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let border_color = if app.focus.panel == Panel::Response {
         Color::Green
     } else {
@@ -435,6 +436,10 @@ fn render_response_panel(frame: &mut Frame, app: &App, area: Rect) {
     render_response_tab_bar(frame, app, response_layout.tab_area);
     frame.render_widget(Paragraph::new(""), response_layout.spacer_area);
 
+    let editing_response =
+        app.app_mode == AppMode::Editing && app.focus.panel == Panel::Response;
+    let response_tab = app.response_tab;
+    let response_scroll = app.response_scroll;
     match &app.response {
         ResponseStatus::Empty => {
             let hint = Paragraph::new("Press Ctrl+R to send request")
@@ -464,24 +469,32 @@ fn render_response_panel(frame: &mut Frame, app: &App, area: Rect) {
             frame.render_widget(hint, response_layout.content_area);
         }
         ResponseStatus::Success(data) => {
-            let editing_response =
-                app.app_mode == AppMode::Editing && app.focus.panel == Panel::Response;
-            match app.response_tab {
-                ResponseTab::Body => render_response_body(
-                    frame,
-                    app,
-                    data,
-                    response_layout.content_area,
-                    app.response_scroll,
-                    editing_response,
-                ),
-                ResponseTab::Headers => render_response_headers(
-                    frame,
-                    app,
-                    response_layout.content_area,
-                    app.response_scroll,
-                    editing_response,
-                ),
+            match response_tab {
+                ResponseTab::Body => {
+                    let (response_editor, cache) =
+                        (&app.response_editor, &mut app.response_body_cache);
+                    render_response_body(
+                        frame,
+                        response_editor,
+                        cache,
+                        data,
+                        response_layout.content_area,
+                        response_scroll,
+                        editing_response,
+                    );
+                }
+                ResponseTab::Headers => {
+                    let (response_headers_editor, cache) =
+                        (&app.response_headers_editor, &mut app.response_headers_cache);
+                    render_response_headers(
+                        frame,
+                        response_headers_editor,
+                        cache,
+                        response_layout.content_area,
+                        response_scroll,
+                        editing_response,
+                    );
+                }
             }
         }
     }
@@ -561,37 +574,45 @@ fn status_color(status: u16) -> Color {
 
 fn render_response_body(
     frame: &mut Frame,
-    app: &App,
+    response_editor: &TextArea<'static>,
+    cache: &mut ResponseBodyRenderCache,
     data: &crate::app::ResponseData,
     area: Rect,
     scroll_offset: u16,
     editing: bool,
 ) {
-    let body_text = app.response_editor.lines().join("\n");
-    let is_json = is_json_response(&data.headers, &body_text);
-    let body_lines = if is_json {
-        colorize_json(&body_text)
-    } else {
-        app.response_editor
-            .lines()
-            .iter()
-            .map(|l| Line::from(l.clone()))
-            .collect()
-    };
+    if cache.dirty {
+        let editor_lines = response_editor.lines();
+        cache.body_text = editor_lines.join("\n");
+        cache.is_json = is_json_response(&data.headers, &cache.body_text);
+        cache.lines = if cache.is_json {
+            colorize_json(&cache.body_text)
+        } else {
+            editor_lines
+                .iter()
+                .map(|l| Line::from(l.clone()))
+                .collect()
+        };
+        cache.generation = cache.generation.wrapping_add(1);
+        cache.dirty = false;
+        cache.wrap_cache.generation = 0;
+    }
     let cursor = if editing {
-        Some(app.response_editor.cursor())
+        Some(response_editor.cursor())
     } else {
         None
     };
     let selection = if editing {
-        app.response_editor.selection_range()
+        response_editor.selection_range()
     } else {
         None
     };
-    render_wrapped_response(
+    render_wrapped_response_cached(
         frame,
         area,
-        body_lines,
+        &cache.lines,
+        &mut cache.wrap_cache,
+        cache.generation,
         cursor,
         selection,
         scroll_offset,
@@ -601,26 +622,35 @@ fn render_response_body(
 
 fn render_response_headers(
     frame: &mut Frame,
-    app: &App,
+    response_headers_editor: &TextArea<'static>,
+    cache: &mut ResponseHeadersRenderCache,
     area: Rect,
     scroll_offset: u16,
     editing: bool,
 ) {
-    let header_lines = colorize_headers(app.response_headers_editor.lines());
+    if cache.dirty {
+        let header_lines = response_headers_editor.lines();
+        cache.lines = colorize_headers(header_lines);
+        cache.generation = cache.generation.wrapping_add(1);
+        cache.dirty = false;
+        cache.wrap_cache.generation = 0;
+    }
     let cursor = if editing {
-        Some(app.response_headers_editor.cursor())
+        Some(response_headers_editor.cursor())
     } else {
         None
     };
     let selection = if editing {
-        app.response_headers_editor.selection_range()
+        response_headers_editor.selection_range()
     } else {
         None
     };
-    render_wrapped_response(
+    render_wrapped_response_cached(
         frame,
         area,
-        header_lines,
+        &cache.lines,
+        &mut cache.wrap_cache,
+        cache.generation,
         cursor,
         selection,
         scroll_offset,
@@ -737,10 +767,12 @@ fn colorize_headers(lines: &[String]) -> Vec<Line<'static>> {
         .collect()
 }
 
-fn render_wrapped_response(
+fn render_wrapped_response_cached(
     frame: &mut Frame,
     area: Rect,
-    lines: Vec<Line<'static>>,
+    lines: &[Line<'static>],
+    cache: &mut WrapCache,
+    lines_generation: u64,
     cursor: Option<(usize, usize)>,
     selection: Option<((usize, usize), (usize, usize))>,
     scroll_offset: u16,
@@ -751,13 +783,25 @@ fn render_wrapped_response(
     }
 
     let width = area.width as usize;
-    let (wrapped_lines, cursor_pos) =
-        wrap_lines_with_cursor(lines, width, cursor, selection);
+    let needs_rewrap = cache.width != width
+        || cache.generation != lines_generation
+        || cache.cursor != cursor
+        || cache.selection != selection;
+    if needs_rewrap {
+        let (wrapped_lines, cursor_pos) =
+            wrap_lines_with_cursor(lines, width, cursor, selection);
+        cache.width = width;
+        cache.generation = lines_generation;
+        cache.cursor = cursor;
+        cache.selection = selection;
+        cache.wrapped_lines = wrapped_lines;
+        cache.cursor_pos = cursor_pos;
+    }
 
     let height = area.height as usize;
     let mut scroll_y = scroll_offset as usize;
     if show_cursor {
-        if let Some((_, cursor_y)) = cursor_pos {
+        if let Some((_, cursor_y)) = cache.cursor_pos {
             if cursor_y >= scroll_y + height {
                 scroll_y = cursor_y.saturating_sub(height.saturating_sub(1));
             } else if cursor_y < scroll_y {
@@ -766,17 +810,19 @@ fn render_wrapped_response(
         }
     }
 
-    let visible_lines: Vec<Line<'static>> = wrapped_lines
-        .into_iter()
+    let visible_lines: Vec<Line<'static>> = cache
+        .wrapped_lines
+        .iter()
         .skip(scroll_y)
         .take(height)
+        .cloned()
         .collect();
 
     let body_widget = Paragraph::new(visible_lines);
     frame.render_widget(body_widget, area);
 
     if show_cursor {
-        if let Some((cursor_x, cursor_y)) = cursor_pos {
+        if let Some((cursor_x, cursor_y)) = cache.cursor_pos {
             if cursor_y >= scroll_y {
                 let rel_y = cursor_y - scroll_y;
                 if rel_y < height {
@@ -792,7 +838,7 @@ fn render_wrapped_response(
 }
 
 fn wrap_lines_with_cursor(
-    lines: Vec<Line<'static>>,
+    lines: &[Line<'static>],
     width: usize,
     cursor: Option<(usize, usize)>,
     selection: Option<((usize, usize), (usize, usize))>,
@@ -801,7 +847,7 @@ fn wrap_lines_with_cursor(
     let mut wrapped_lines = Vec::new();
     let mut cursor_pos: Option<(usize, usize)> = None;
 
-    for (row, line) in lines.into_iter().enumerate() {
+    for (row, line) in lines.iter().enumerate() {
         let line_len = line_char_len(&line);
         let selection_range = selection_range_for_row(selection, row, line_len);
         let cursor_col = cursor.and_then(|(r, c)| if r == row { Some(c) } else { None });

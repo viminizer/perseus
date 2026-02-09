@@ -11,6 +11,7 @@ use crossterm::{
     ExecutableCommand,
 };
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use reqwest::Client;
@@ -335,6 +336,68 @@ fn configure_editor(editor: &mut TextArea<'static>, placeholder: &str) {
     editor.set_placeholder_text(placeholder);
 }
 
+pub(crate) struct WrapCache {
+    pub(crate) width: usize,
+    pub(crate) generation: u64,
+    pub(crate) cursor: Option<(usize, usize)>,
+    pub(crate) selection: Option<((usize, usize), (usize, usize))>,
+    pub(crate) wrapped_lines: Vec<Line<'static>>,
+    pub(crate) cursor_pos: Option<(usize, usize)>,
+}
+
+impl WrapCache {
+    fn new() -> Self {
+        Self {
+            width: 0,
+            generation: 0,
+            cursor: None,
+            selection: None,
+            wrapped_lines: Vec::new(),
+            cursor_pos: None,
+        }
+    }
+}
+
+pub(crate) struct ResponseBodyRenderCache {
+    pub(crate) dirty: bool,
+    pub(crate) generation: u64,
+    pub(crate) body_text: String,
+    pub(crate) is_json: bool,
+    pub(crate) lines: Vec<Line<'static>>,
+    pub(crate) wrap_cache: WrapCache,
+}
+
+impl ResponseBodyRenderCache {
+    fn new() -> Self {
+        Self {
+            dirty: true,
+            generation: 0,
+            body_text: String::new(),
+            is_json: false,
+            lines: Vec::new(),
+            wrap_cache: WrapCache::new(),
+        }
+    }
+}
+
+pub(crate) struct ResponseHeadersRenderCache {
+    pub(crate) dirty: bool,
+    pub(crate) generation: u64,
+    pub(crate) lines: Vec<Line<'static>>,
+    pub(crate) wrap_cache: WrapCache,
+}
+
+impl ResponseHeadersRenderCache {
+    fn new() -> Self {
+        Self {
+            dirty: true,
+            generation: 0,
+            lines: Vec::new(),
+            wrap_cache: WrapCache::new(),
+        }
+    }
+}
+
 pub struct App {
     running: bool,
     pub request: RequestState,
@@ -367,6 +430,8 @@ pub struct App {
     last_yank_response_headers: String,
     pub response_editor: TextArea<'static>,
     pub response_headers_editor: TextArea<'static>,
+    pub(crate) response_body_cache: ResponseBodyRenderCache,
+    pub(crate) response_headers_cache: ResponseHeadersRenderCache,
 }
 
 impl App {
@@ -477,6 +542,8 @@ impl App {
                 editor.set_cursor_line_style(Style::default());
                 editor
             },
+            response_body_cache: ResponseBodyRenderCache::new(),
+            response_headers_cache: ResponseHeadersRenderCache::new(),
         };
 
         if let Some(request_id) = created_request_id {
@@ -1608,6 +1675,8 @@ impl App {
                             .set_cursor_line_style(Style::default());
                         self.last_yank_response = self.response_editor.yank_text();
                         self.last_yank_response_headers = self.response_headers_editor.yank_text();
+                        self.response_body_cache.dirty = true;
+                        self.response_headers_cache.dirty = true;
                     }
                 }
                 self.request_handle = None;
@@ -1962,6 +2031,18 @@ impl App {
         if is_request {
             if key.code != KeyCode::Esc {
                 self.request_dirty = true;
+            }
+        }
+        if is_response {
+            if key.code != KeyCode::Esc {
+                match self.response_tab {
+                    ResponseTab::Body => {
+                        self.response_body_cache.dirty = true;
+                    }
+                    ResponseTab::Headers => {
+                        self.response_headers_cache.dirty = true;
+                    }
+                }
             }
         }
 
