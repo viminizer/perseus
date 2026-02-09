@@ -422,6 +422,7 @@ impl ResponseHeadersRenderCache {
 
 pub struct App {
     running: bool,
+    dirty: bool,
     pub request: RequestState,
     pub focus: FocusState,
     pub response: ResponseStatus,
@@ -458,6 +459,7 @@ pub struct App {
 
 impl App {
     const CLIPBOARD_TOAST_DURATION: Duration = Duration::from_secs(2);
+    const SPINNER_TICK: Duration = Duration::from_millis(100);
 
     pub fn new() -> Result<Self> {
         let client = Client::builder()
@@ -585,6 +587,7 @@ impl App {
 
         let mut app = Self {
             running: true,
+            dirty: true,
             request: RequestState::new(),
             focus: FocusState::default(),
             response: ResponseStatus::Empty,
@@ -668,6 +671,7 @@ impl App {
 
     fn set_clipboard_toast(&mut self, msg: impl Into<String>) {
         self.clipboard_toast = Some((msg.into(), Instant::now()));
+        self.dirty = true;
     }
 
     fn persist_ui_state(&self) {
@@ -1758,15 +1762,16 @@ impl App {
     async fn event_loop(&mut self) -> Result<()> {
         let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
         let (tx, mut rx) = mpsc::channel::<Result<ResponseData, String>>(1);
+        let mut last_spinner_tick = Instant::now();
+        let mut was_loading = false;
 
         while self.running {
             let _loop_guard = perf::scope("event_loop_tick");
-            self.prepare_editors();
-            let _draw_guard = perf::scope("terminal.draw");
-            terminal.draw(|frame| {
-                let _render_guard = perf::scope("ui::render");
-                ui::render(frame, self);
-            })?;
+            let is_loading = matches!(self.response, ResponseStatus::Loading);
+            if is_loading && !was_loading {
+                last_spinner_tick = Instant::now();
+            }
+            was_loading = is_loading;
 
             if let Ok(result) = rx.try_recv() {
                 if matches!(self.response, ResponseStatus::Loading) {
@@ -1801,18 +1806,57 @@ impl App {
                         self.response_body_cache.dirty = true;
                         self.response_headers_cache.dirty = true;
                     }
+                    self.dirty = true;
                 }
                 self.request_handle = None;
             }
 
-            if matches!(self.response, ResponseStatus::Loading) {
-                self.loading_tick = self.loading_tick.wrapping_add(1);
+            if let Some((_, at)) = &self.clipboard_toast {
+                if at.elapsed() > Self::CLIPBOARD_TOAST_DURATION {
+                    self.clipboard_toast = None;
+                    self.dirty = true;
+                }
             }
 
-            if event::poll(std::time::Duration::from_millis(50))? {
+            if is_loading && last_spinner_tick.elapsed() >= Self::SPINNER_TICK {
+                self.loading_tick = self.loading_tick.wrapping_add(1);
+                last_spinner_tick = Instant::now();
+                self.dirty = true;
+            }
+
+            if self.dirty {
+                self.prepare_editors();
+                let _draw_guard = perf::scope("terminal.draw");
+                terminal.draw(|frame| {
+                    let _render_guard = perf::scope("ui::render");
+                    ui::render(frame, self);
+                })?;
+                self.dirty = false;
+            }
+
+            let now = Instant::now();
+            let mut timeout = if is_loading {
+                let next_tick = last_spinner_tick + Self::SPINNER_TICK;
+                next_tick.saturating_duration_since(now)
+            } else {
+                Duration::from_millis(250)
+            };
+            if let Some((_, at)) = &self.clipboard_toast {
+                let deadline = *at + Self::CLIPBOARD_TOAST_DURATION;
+                let until_deadline = deadline.saturating_duration_since(now);
+                if until_deadline < timeout {
+                    timeout = until_deadline;
+                }
+            }
+            if timeout.is_zero() {
+                timeout = Duration::from_millis(1);
+            }
+
+            if event::poll(timeout)? {
                 if let Event::Key(key) = event::read()? {
                     if key.kind == KeyEventKind::Press {
                         self.handle_key(key, tx.clone());
+                        self.dirty = true;
                     }
                 }
             }
