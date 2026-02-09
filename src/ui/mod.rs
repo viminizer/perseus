@@ -676,27 +676,31 @@ fn colorize_json(json: &str) -> Vec<Line<'static>> {
 
     let mut chars = json.chars().peekable();
     let mut in_string = false;
-    let mut is_key = false;
     let mut current_token = String::new();
+    let mut stack: Vec<char> = Vec::new();
+    let mut expecting_key = false;
+    let mut current_string_is_key = false;
 
     while let Some(c) = chars.next() {
         match c {
             '"' if !in_string => {
                 in_string = true;
-                is_key = current_spans.is_empty()
-                    || current_spans
-                        .last()
-                        .is_some_and(|s| s.content.ends_with(['{', ',', '\n']));
+                current_string_is_key = expecting_key && matches!(stack.last(), Some('{'));
                 current_token.push(c);
             }
             '"' if in_string => {
                 current_token.push(c);
-                let color = if is_key { Color::Cyan } else { Color::Green };
+                let color = if current_string_is_key {
+                    Color::Cyan
+                } else {
+                    Color::Green
+                };
                 current_spans.push(Span::styled(
                     std::mem::take(&mut current_token),
                     Style::default().fg(color),
                 ));
                 in_string = false;
+                current_string_is_key = false;
             }
             '\n' => {
                 if !current_token.is_empty() {
@@ -707,13 +711,67 @@ fn colorize_json(json: &str) -> Vec<Line<'static>> {
             _ if in_string => {
                 current_token.push(c);
             }
-            ':' | ',' | '{' | '}' | '[' | ']' => {
+            '{' => {
                 if !current_token.is_empty() {
                     let span = colorize_token(&current_token);
                     current_spans.push(span);
                     current_token.clear();
                 }
                 current_spans.push(Span::raw(c.to_string()));
+                stack.push('{');
+                expecting_key = true;
+            }
+            '}' => {
+                if !current_token.is_empty() {
+                    let span = colorize_token(&current_token);
+                    current_spans.push(span);
+                    current_token.clear();
+                }
+                current_spans.push(Span::raw(c.to_string()));
+                if stack.last() == Some(&'{') {
+                    stack.pop();
+                }
+                expecting_key = false;
+            }
+            '[' => {
+                if !current_token.is_empty() {
+                    let span = colorize_token(&current_token);
+                    current_spans.push(span);
+                    current_token.clear();
+                }
+                current_spans.push(Span::raw(c.to_string()));
+                stack.push('[');
+                expecting_key = false;
+            }
+            ']' => {
+                if !current_token.is_empty() {
+                    let span = colorize_token(&current_token);
+                    current_spans.push(span);
+                    current_token.clear();
+                }
+                current_spans.push(Span::raw(c.to_string()));
+                if stack.last() == Some(&'[') {
+                    stack.pop();
+                }
+                expecting_key = false;
+            }
+            ':' => {
+                if !current_token.is_empty() {
+                    let span = colorize_token(&current_token);
+                    current_spans.push(span);
+                    current_token.clear();
+                }
+                current_spans.push(Span::raw(c.to_string()));
+                expecting_key = false;
+            }
+            ',' => {
+                if !current_token.is_empty() {
+                    let span = colorize_token(&current_token);
+                    current_spans.push(span);
+                    current_token.clear();
+                }
+                current_spans.push(Span::raw(c.to_string()));
+                expecting_key = matches!(stack.last(), Some('{'));
             }
             c if c.is_whitespace() => {
                 if !current_token.is_empty() {
@@ -741,13 +799,10 @@ fn colorize_json(json: &str) -> Vec<Line<'static>> {
 }
 
 fn colorize_token(token: &str) -> Span<'static> {
-    let trimmed = token.trim();
-    if trimmed == "true" || trimmed == "false" || trimmed == "null" {
-        Span::styled(token.to_string(), Style::default().fg(Color::Magenta))
-    } else if trimmed.parse::<f64>().is_ok() {
-        Span::styled(token.to_string(), Style::default().fg(Color::Yellow))
-    } else {
+    if token.trim().is_empty() {
         Span::raw(token.to_string())
+    } else {
+        Span::styled(token.to_string(), Style::default().fg(Color::Green))
     }
 }
 
@@ -830,7 +885,7 @@ fn render_wrapped_response_cached(
                     let clamped_x = cursor_x.min(max_x);
                     let x = area.x.saturating_add(clamped_x as u16);
                     let y = area.y.saturating_add(rel_y as u16);
-                    frame.set_cursor(x, y);
+                    frame.set_cursor_position((x, y));
                 }
             }
         }
@@ -1110,7 +1165,7 @@ fn render_help_overlay(frame: &mut Frame) {
         Line::from("  Esc         Return to navigation"),
         Line::from("  j/k or ↑/↓  Move selection"),
         Line::from("  h           Collapse / parent"),
-        Line::from("  l / Enter   Expand / open request"),
+        Line::from("  l / Enter   Toggle folder / open request"),
         Line::from("  a           Add request or folder"),
         Line::from("  r           Rename"),
         Line::from("  d           Delete"),

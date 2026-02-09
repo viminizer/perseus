@@ -66,6 +66,24 @@ impl Vim {
         }
     }
 
+    pub fn transition_read_only(
+        &self,
+        input: Input,
+        textarea: &mut TextArea<'_>,
+        single_line: bool,
+    ) -> Transition {
+        if input.key == Key::Null {
+            return Transition::Nop;
+        }
+
+        match self.mode {
+            VimMode::Normal | VimMode::Visual | VimMode::Operator(_) => {
+                self.handle_read_only_normal_visual_operator(input, textarea, single_line)
+            }
+            VimMode::Insert => self.handle_read_only_insert(input),
+        }
+    }
+
     fn handle_insert(
         &self,
         input: Input,
@@ -81,6 +99,13 @@ impl Vim {
                 textarea.input(input);
                 Transition::Mode(VimMode::Insert)
             }
+        }
+    }
+
+    fn handle_read_only_insert(&self, input: Input) -> Transition {
+        match input {
+            Input { key: Key::Esc, .. } => Transition::Mode(VimMode::Normal),
+            _ => Transition::Nop,
         }
     }
 
@@ -429,6 +454,193 @@ impl Vim {
             }
             // Unhandled input becomes pending (for gg, etc.)
             input => Transition::Pending(input),
+        }
+    }
+
+    fn handle_read_only_normal_visual_operator(
+        &self,
+        input: Input,
+        textarea: &mut TextArea<'_>,
+        _single_line: bool,
+    ) -> Transition {
+        if let VimMode::Operator(op) = self.mode {
+            if op != 'y' {
+                textarea.cancel_selection();
+                return Transition::Mode(VimMode::Normal);
+            }
+        }
+
+        match input {
+            Input { key: Key::Esc, .. } => match self.mode {
+                VimMode::Normal => Transition::ExitField,
+                VimMode::Visual | VimMode::Operator(_) => {
+                    textarea.cancel_selection();
+                    Transition::Mode(VimMode::Normal)
+                }
+                _ => Transition::Nop,
+            },
+            Input {
+                key: Key::Char('h'),
+                ctrl: false,
+                ..
+            } => {
+                textarea.move_cursor(CursorMove::Back);
+                self.after_motion()
+            }
+            Input {
+                key: Key::Char('j'),
+                ctrl: false,
+                ..
+            } => {
+                textarea.move_cursor(CursorMove::Down);
+                self.after_motion()
+            }
+            Input {
+                key: Key::Char('k'),
+                ctrl: false,
+                ..
+            } => {
+                textarea.move_cursor(CursorMove::Up);
+                self.after_motion()
+            }
+            Input {
+                key: Key::Char('l'),
+                ctrl: false,
+                ..
+            } => {
+                textarea.move_cursor(CursorMove::Forward);
+                self.after_motion()
+            }
+            Input {
+                key: Key::Char('w'),
+                ctrl: false,
+                ..
+            } => {
+                textarea.move_cursor(CursorMove::WordForward);
+                self.after_motion()
+            }
+            Input {
+                key: Key::Char('e'),
+                ctrl: false,
+                ..
+            } => {
+                textarea.move_cursor(CursorMove::WordEnd);
+                if matches!(self.mode, VimMode::Operator(_)) {
+                    textarea.move_cursor(CursorMove::Forward);
+                }
+                self.after_motion()
+            }
+            Input {
+                key: Key::Char('b'),
+                ctrl: false,
+                ..
+            } => {
+                textarea.move_cursor(CursorMove::WordBack);
+                self.after_motion()
+            }
+            Input { key: Key::Char('0'), .. }
+            | Input { key: Key::Char('^'), .. } => {
+                textarea.move_cursor(CursorMove::Head);
+                self.after_motion()
+            }
+            Input { key: Key::Char('$'), .. } => {
+                textarea.move_cursor(CursorMove::End);
+                self.after_motion()
+            }
+            Input {
+                key: Key::Char('g'),
+                ctrl: false,
+                ..
+            } if matches!(
+                self.pending,
+                Input {
+                    key: Key::Char('g'),
+                    ctrl: false,
+                    ..
+                }
+            ) => {
+                textarea.move_cursor(CursorMove::Top);
+                self.after_motion()
+            }
+            Input {
+                key: Key::Char('g'),
+                ctrl: false,
+                ..
+            } => Transition::Pending(input),
+            Input { key: Key::Char('G'), .. } => {
+                textarea.move_cursor(CursorMove::Bottom);
+                self.after_motion()
+            }
+            Input {
+                key: Key::Char('y'),
+                ctrl: false,
+                ..
+            } if self.mode == VimMode::Normal => {
+                textarea.start_selection();
+                Transition::Mode(VimMode::Operator('y'))
+            }
+            Input {
+                key: Key::Char('y'),
+                ctrl: false,
+                ..
+            } if self.mode == VimMode::Visual => {
+                textarea.move_cursor(CursorMove::Forward);
+                textarea.copy();
+                Transition::Mode(VimMode::Normal)
+            }
+            Input {
+                key: Key::Char('y'),
+                ctrl: false,
+                ..
+            } if matches!(self.mode, VimMode::Operator('y')) => {
+                textarea.move_cursor(CursorMove::Head);
+                textarea.start_selection();
+                let before = textarea.cursor();
+                textarea.move_cursor(CursorMove::Down);
+                if before == textarea.cursor() {
+                    textarea.move_cursor(CursorMove::End);
+                }
+                self.complete_operator('y', textarea)
+            }
+            Input {
+                key: Key::Char('v'),
+                ctrl: false,
+                ..
+            } if self.mode == VimMode::Normal => {
+                textarea.start_selection();
+                Transition::Mode(VimMode::Visual)
+            }
+            Input {
+                key: Key::Char('v'),
+                ctrl: false,
+                ..
+            } if self.mode == VimMode::Visual => {
+                textarea.cancel_selection();
+                Transition::Mode(VimMode::Normal)
+            }
+            Input { key: Key::Char('V'), .. } if self.mode == VimMode::Normal => {
+                textarea.move_cursor(CursorMove::Head);
+                textarea.start_selection();
+                textarea.move_cursor(CursorMove::End);
+                Transition::Mode(VimMode::Visual)
+            }
+            Input {
+                key: Key::Char('d'),
+                ctrl: true,
+                ..
+            } => {
+                textarea.scroll((textarea.cursor().0.saturating_add(10) as i16, 0));
+                Transition::Nop
+            }
+            Input {
+                key: Key::Char('u'),
+                ctrl: true,
+                ..
+            } => {
+                textarea.scroll((-(textarea.cursor().0.min(10) as i16), 0));
+                Transition::Nop
+            }
+            _ => Transition::Nop,
         }
     }
 

@@ -24,7 +24,7 @@ Date: 2026-02-08
 - r: rename
 - j/k: move selection up/down
 - h: collapse folder or project
-- l: expand folder or project; open request
+- l: toggle folder or project; open request
 - Enter: open request
 
 ## Keybinds (Added)

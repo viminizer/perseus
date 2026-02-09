@@ -23,6 +23,12 @@ pub fn find_project_root() -> Option<PathBuf> {
     }
 }
 
+pub fn project_root_key() -> Option<String> {
+    let root = find_project_root()?;
+    let canonical = fs::canonicalize(root).ok()?;
+    Some(canonical.to_string_lossy().to_string())
+}
+
 pub fn storage_dir() -> Option<PathBuf> {
     find_project_root().map(|root| root.join(".perseus"))
 }

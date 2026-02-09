@@ -54,11 +54,32 @@ impl ResponseTab {
     }
 }
 
+fn response_tab_from_str(value: &str) -> ResponseTab {
+    match value {
+        "Headers" => ResponseTab::Headers,
+        _ => ResponseTab::Body,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RequestTab {
     #[default]
     Headers,
     Body,
+}
+
+fn request_tab_from_str(value: &str) -> RequestTab {
+    match value {
+        "Body" => RequestTab::Body,
+        _ => RequestTab::Headers,
+    }
+}
+
+fn request_tab_to_str(value: RequestTab) -> &'static str {
+    match value {
+        RequestTab::Headers => "Headers",
+        RequestTab::Body => "Body",
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -464,11 +485,27 @@ impl App {
 
         let ui_state = storage::load_ui_state()
             .map_err(anyhow::Error::msg)?
-            .unwrap_or_else(|| {
-            storage::UiState::new(project_list[0].id.to_string(), 32)
-        });
-        let mut active_project_id =
-            Uuid::parse_str(&ui_state.active_project_id).unwrap_or(project_list[0].id);
+            .unwrap_or_else(|| storage::UiState::new(project_list[0].id.to_string(), 32));
+
+        let root_key = storage::project_root_key();
+        let session_state = match root_key.as_deref() {
+            Some(key) => match storage::load_session_for_root(key) {
+                Ok(state) => state,
+                Err(err) => {
+                    eprintln!("Failed to load session: {}", err);
+                    None
+                }
+            },
+            None => None,
+        };
+
+        let session_active_project = session_state
+            .as_ref()
+            .and_then(|state| Uuid::parse_str(&state.active_project_id).ok());
+        let ui_active_project = Uuid::parse_str(&ui_state.active_project_id).ok();
+        let mut active_project_id = session_active_project
+            .or(ui_active_project)
+            .unwrap_or(project_list[0].id);
         if !project_list.iter().any(|p| p.id == active_project_id) {
             active_project_id = project_list[0].id;
         }
@@ -483,16 +520,59 @@ impl App {
             created_request_id = Some(new_id);
         }
 
-        let sidebar_width = clamp_sidebar_width(ui_state.sidebar_width);
+        let sidebar_width = clamp_sidebar_width(
+            session_state
+                .as_ref()
+                .map(|state| state.sidebar_width)
+                .unwrap_or(ui_state.sidebar_width),
+        );
+        let sidebar_visible = session_state
+            .as_ref()
+            .map(|state| state.sidebar_visible)
+            .unwrap_or(true);
+        let request_tab = session_state
+            .as_ref()
+            .map(|state| request_tab_from_str(&state.request_tab))
+            .unwrap_or_default();
+        let response_tab = session_state
+            .as_ref()
+            .map(|state| response_tab_from_str(&state.response_tab))
+            .unwrap_or_default();
+        let session_selection_id = session_state
+            .as_ref()
+            .and_then(|state| state.selection_id.as_ref())
+            .and_then(|id| Uuid::parse_str(id).ok());
+        let session_current_request_id = session_state
+            .as_ref()
+            .and_then(|state| state.current_request_id.as_ref())
+            .and_then(|id| Uuid::parse_str(id).ok());
+        let session_expanded_ids: Vec<Uuid> = session_state
+            .as_ref()
+            .map(|state| {
+                state
+                    .expanded
+                    .iter()
+                    .filter_map(|id| Uuid::parse_str(id).ok())
+                    .collect()
+            })
+            .unwrap_or_default();
         let sidebar_tree = collection
             .build_tree(active_project_id)
             .map_err(anyhow::Error::msg)?;
 
         let mut expanded = HashSet::new();
+        for id in session_expanded_ids {
+            if sidebar_tree.nodes.contains_key(&id) {
+                expanded.insert(id);
+            }
+        }
         expanded.insert(active_project_id);
+        let session_selection_id =
+            session_selection_id.filter(|id| sidebar_tree.nodes.contains_key(id));
+        let selection_id = session_selection_id.unwrap_or(active_project_id);
 
         let sidebar = SidebarState {
-            selection_id: Some(active_project_id),
+            selection_id: Some(selection_id),
             expanded,
             search_query: String::new(),
             popup: None,
@@ -507,8 +587,8 @@ impl App {
             request: RequestState::new(),
             focus: FocusState::default(),
             response: ResponseStatus::Empty,
-            response_tab: ResponseTab::default(),
-            request_tab: RequestTab::default(),
+            response_tab,
+            request_tab,
             client,
             app_mode: AppMode::Navigation,
             vim: Vim::new(VimMode::Normal),
@@ -517,7 +597,7 @@ impl App {
             show_help: false,
             show_method_popup: false,
             method_popup_index: 0,
-            sidebar_visible: true,
+            sidebar_visible,
             sidebar_width,
             collection,
             project_list,
@@ -550,6 +630,17 @@ impl App {
             app.sidebar.selection_id = Some(request_id);
             app.expand_sidebar_ancestors(request_id);
             app.open_request(request_id);
+        } else if let Some(request_id) = session_current_request_id {
+            if app.sidebar_tree.nodes.contains_key(&request_id) {
+                app.sidebar.selection_id = Some(request_id);
+                app.expand_sidebar_ancestors(request_id);
+                app.open_request(request_id);
+            }
+        } else if let Some(selection_id) = session_selection_id {
+            if app.sidebar_tree.nodes.contains_key(&selection_id) {
+                app.sidebar.selection_id = Some(selection_id);
+                app.expand_sidebar_ancestors(selection_id);
+            }
         }
 
         app.persist_ui_state();
@@ -562,6 +653,7 @@ impl App {
 
         let result = self.event_loop().await;
 
+        self.persist_session_state();
         self.restore_terminal()?;
         result
     }
@@ -581,6 +673,27 @@ impl App {
         let state = storage::UiState::new(self.active_project_id.to_string(), self.sidebar_width);
         if let Err(err) = storage::save_ui_state(&state) {
             eprintln!("Failed to save UI state: {}", err);
+        }
+    }
+
+    fn persist_session_state(&self) {
+        let Some(root_key) = storage::project_root_key() else {
+            return;
+        };
+        let mut expanded: Vec<String> = self.sidebar.expanded.iter().map(|id| id.to_string()).collect();
+        expanded.sort();
+        let session = storage::SessionState {
+            active_project_id: self.active_project_id.to_string(),
+            sidebar_width: self.sidebar_width,
+            sidebar_visible: self.sidebar_visible,
+            selection_id: self.sidebar.selection_id.map(|id| id.to_string()),
+            current_request_id: self.current_request_id.map(|id| id.to_string()),
+            expanded,
+            request_tab: request_tab_to_str(self.request_tab).to_string(),
+            response_tab: self.response_tab.label().to_string(),
+        };
+        if let Err(err) = storage::save_session_for_root(&root_key, session) {
+            eprintln!("Failed to save session: {}", err);
         }
     }
 
@@ -862,6 +975,7 @@ impl App {
             KeyCode::Char('?') => self.show_help = !self.show_help,
             KeyCode::Char('q') => {
                 self.save_current_request_if_dirty();
+                self.persist_session_state();
                 self.running = false;
             }
             KeyCode::Esc => {
@@ -1162,14 +1276,17 @@ impl App {
         let Some(node) = self.sidebar_selected_node() else {
             return;
         };
+        let node_id = node.id;
         match node.kind {
             NodeKind::Request => {
-                self.open_request(node.id);
+                self.open_request(node_id);
                 self.app_mode = AppMode::Navigation;
             }
             NodeKind::Folder | NodeKind::Project => {
-                if !self.sidebar.expanded.contains(&node.id) {
-                    self.sidebar.expanded.insert(node.id);
+                if self.sidebar.expanded.contains(&node_id) {
+                    self.sidebar.expanded.remove(&node_id);
+                } else {
+                    self.sidebar.expanded.insert(node_id);
                 }
             }
         }
@@ -1912,6 +2029,7 @@ impl App {
             }
             KeyCode::Char('q') => {
                 self.save_current_request_if_dirty();
+                self.persist_session_state();
                 self.running = false;
             }
             _ => {}
@@ -2033,21 +2151,11 @@ impl App {
                 self.request_dirty = true;
             }
         }
-        if is_response {
-            if key.code != KeyCode::Esc {
-                match self.response_tab {
-                    ResponseTab::Body => {
-                        self.response_body_cache.dirty = true;
-                    }
-                    ResponseTab::Headers => {
-                        self.response_headers_cache.dirty = true;
-                    }
-                }
-            }
-        }
 
         if is_clipboard_modifier && matches!(key.code, KeyCode::Char('v') | KeyCode::Char('V')) {
-            self.handle_clipboard_paste_shortcut();
+            if !is_response {
+                self.handle_clipboard_paste_shortcut();
+            }
             return;
         }
 
@@ -2093,9 +2201,11 @@ impl App {
             let response_tab = self.response_tab;
             let vim = &self.vim;
             match response_tab {
-                ResponseTab::Body => vim.transition(input, &mut self.response_editor, false),
+                ResponseTab::Body => {
+                    vim.transition_read_only(input, &mut self.response_editor, false)
+                }
                 ResponseTab::Headers => {
-                    vim.transition(input, &mut self.response_headers_editor, false)
+                    vim.transition_read_only(input, &mut self.response_headers_editor, false)
                 }
             }
         } else {
