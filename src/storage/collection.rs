@@ -271,6 +271,18 @@ impl CollectionStore {
         Ok(())
     }
 
+    pub fn delete_request_file(&self, request_id: Uuid) -> Result<(), String> {
+        let dir = match requests_dir() {
+            Some(d) => d,
+            None => return Err("Could not find project root".to_string()),
+        };
+        let path = dir.join(format!("{}.json", request_id));
+        if path.exists() {
+            fs::remove_file(path).map_err(|e| format!("Failed to delete request file: {}", e))?;
+        }
+        Ok(())
+    }
+
     pub fn write_all_request_files(&self) -> Result<(), String> {
         let dir = match requests_dir() {
             Some(d) => d,

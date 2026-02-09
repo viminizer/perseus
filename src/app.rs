@@ -970,6 +970,26 @@ impl App {
         Ok(())
     }
 
+    fn write_request_files(&self, request_ids: &[Uuid]) -> Result<(), String> {
+        for request_id in request_ids {
+            let parent_id = self
+                .sidebar_tree
+                .node(*request_id)
+                .and_then(|node| node.parent_id)
+                .ok_or("Request parent not found")?;
+            self.collection
+                .save_request_file(*request_id, parent_id, self.active_project_id)?;
+        }
+        Ok(())
+    }
+
+    fn delete_request_files(&self, request_ids: &[Uuid]) -> Result<(), String> {
+        for request_id in request_ids {
+            self.collection.delete_request_file(*request_id)?;
+        }
+        Ok(())
+    }
+
     fn build_postman_request(&self) -> PostmanRequest {
         let method = self.request.method.as_str().to_string();
         let url = self.request.url_text();
@@ -1216,9 +1236,17 @@ impl App {
         let Some(id) = self.sidebar_selected_id() else {
             return Ok(());
         };
+        let is_request = self
+            .sidebar_tree
+            .node(id)
+            .map(|n| n.kind == NodeKind::Request)
+            .unwrap_or(false);
         self.collection.rename_item(id, name)?;
         self.collection.save()?;
         self.refresh_after_collection_change();
+        if is_request {
+            self.write_request_files(&[id])?;
+        }
         Ok(())
     }
 
@@ -1232,6 +1260,10 @@ impl App {
             .map(|n| n.kind)
             .unwrap_or(NodeKind::Folder);
         let was_active_project = id == self.active_project_id;
+        let mut request_ids = Vec::new();
+        if let Some(item) = self.collection.get_item(id) {
+            collect_request_ids(item, &mut request_ids);
+        }
         self.collection.delete_item(id)?;
         self.collection.save()?;
         self.project_list = self.collection.list_projects();
@@ -1263,6 +1295,10 @@ impl App {
             }
         }
 
+        if !request_ids.is_empty() {
+            self.delete_request_files(&request_ids)?;
+        }
+
         Ok(())
     }
 
@@ -1271,8 +1307,15 @@ impl App {
             return Ok(());
         };
         let new_id = self.collection.duplicate_item(id)?;
+        let mut request_ids = Vec::new();
+        if let Some(item) = self.collection.get_item(new_id) {
+            collect_request_ids(item, &mut request_ids);
+        }
         self.collection.save()?;
         self.refresh_after_collection_change();
+        if !request_ids.is_empty() {
+            self.write_request_files(&request_ids)?;
+        }
         self.sidebar.selection_id = Some(new_id);
         Ok(())
     }
@@ -1287,12 +1330,16 @@ impl App {
         let Some(node) = self.sidebar_tree.node(id) else {
             return Ok(());
         };
+        let is_request = node.kind == NodeKind::Request;
         if node.kind == NodeKind::Project {
             return Err("Projects cannot be moved".to_string());
         }
         self.collection.move_item(id, dest_id)?;
         self.collection.save()?;
         self.refresh_after_collection_change();
+        if is_request {
+            self.write_request_files(&[id])?;
+        }
         self.sidebar.selection_id = Some(id);
         Ok(())
     }
@@ -1475,9 +1522,6 @@ impl App {
         self.project_list = self.collection.list_projects();
         self.rebuild_sidebar_tree();
         self.persist_ui_state();
-        if let Err(err) = self.collection.write_all_request_files() {
-            self.response = ResponseStatus::Error(err);
-        }
     }
 
     fn add_parent_id(&self) -> Uuid {
@@ -2601,6 +2645,17 @@ fn collection_has_requests(items: &[PostmanItem]) -> bool {
         }
     }
     false
+}
+
+fn collect_request_ids(item: &PostmanItem, out: &mut Vec<Uuid>) {
+    if item.request.is_some() {
+        if let Ok(id) = Uuid::parse_str(&item.id) {
+            out.push(id);
+        }
+    }
+    for child in &item.item {
+        collect_request_ids(child, out);
+    }
 }
 
 fn clamp_sidebar_width(value: u16) -> u16 {
