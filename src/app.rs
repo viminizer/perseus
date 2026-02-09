@@ -831,7 +831,7 @@ impl App {
             if node.kind == NodeKind::Project {
                 continue;
             }
-            if node.name.to_lowercase().contains(&query) {
+            if node.name_lower.contains(&query) {
                 let path = self.sidebar_tree.path_for(*id).join("/");
                 let method = if node.kind == NodeKind::Request {
                     node.request_method
@@ -850,7 +850,7 @@ impl App {
                 });
             }
         }
-        lines.sort_by(|a, b| a.label.to_lowercase().cmp(&b.label.to_lowercase()));
+        lines.sort_by_cached_key(|line| line.label.to_lowercase());
         lines
     }
 

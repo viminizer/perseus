@@ -19,6 +19,7 @@ pub enum NodeKind {
 pub struct TreeNode {
     pub id: Uuid,
     pub name: String,
+    pub name_lower: String,
     pub kind: NodeKind,
     pub request_method: Option<String>,
     pub parent_id: Option<Uuid>,
@@ -126,6 +127,7 @@ impl CollectionStore {
         let mut root_node = TreeNode {
             id: project_id,
             name: project_item.name.clone(),
+            name_lower: project_item.name.to_lowercase(),
             kind: NodeKind::Project,
             request_method: None,
             parent_id: None,
@@ -376,6 +378,7 @@ fn build_tree_node(item: &PostmanItem, parent_id: Uuid, nodes: &mut HashMap<Uuid
     let mut node = TreeNode {
         id,
         name: item.name.clone(),
+        name_lower: item.name.to_lowercase(),
         kind,
         request_method,
         parent_id: Some(parent_id),
