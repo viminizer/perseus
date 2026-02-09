@@ -276,6 +276,35 @@ pub struct SidebarLine {
     pub method: Option<HttpMethod>,
 }
 
+struct SidebarCache {
+    lines: Vec<SidebarLine>,
+    search_lines: Vec<SidebarLine>,
+    lines_dirty: bool,
+    search_dirty: bool,
+    search_query: String,
+}
+
+impl SidebarCache {
+    fn new() -> Self {
+        Self {
+            lines: Vec::new(),
+            search_lines: Vec::new(),
+            lines_dirty: true,
+            search_dirty: true,
+            search_query: String::new(),
+        }
+    }
+
+    fn invalidate_all(&mut self) {
+        self.lines_dirty = true;
+        self.search_dirty = true;
+    }
+
+    fn invalidate_search(&mut self) {
+        self.search_dirty = true;
+    }
+}
+
 pub struct RequestState {
     pub method: HttpMethod,
     pub url_editor: TextArea<'static>,
@@ -442,6 +471,7 @@ pub struct App {
     pub project_list: Vec<ProjectInfo>,
     pub sidebar_tree: ProjectTree,
     pub sidebar: SidebarState,
+    sidebar_cache: SidebarCache,
     pub active_project_id: Uuid,
     pub current_request_id: Option<Uuid>,
     pub request_dirty: bool,
@@ -607,6 +637,7 @@ impl App {
             project_list,
             sidebar_tree,
             sidebar,
+            sidebar_cache: SidebarCache::new(),
             active_project_id,
             current_request_id: None,
             request_dirty: false,
@@ -674,6 +705,16 @@ impl App {
         self.dirty = true;
     }
 
+    fn mark_sidebar_dirty(&mut self) {
+        self.sidebar_cache.invalidate_all();
+        self.dirty = true;
+    }
+
+    fn mark_sidebar_search_dirty(&mut self) {
+        self.sidebar_cache.invalidate_search();
+        self.dirty = true;
+    }
+
     fn persist_ui_state(&self) {
         let state = storage::UiState::new(self.active_project_id.to_string(), self.sidebar_width);
         if let Err(err) = storage::save_ui_state(&state) {
@@ -719,6 +760,7 @@ impl App {
         } else {
             self.sidebar.selection_id = Some(self.active_project_id);
         }
+        self.mark_sidebar_dirty();
     }
 
     fn expand_sidebar_ancestors(&mut self, id: Uuid) {
@@ -733,6 +775,7 @@ impl App {
                 break;
             }
         }
+        self.mark_sidebar_dirty();
     }
 
     fn focus_sidebar(&mut self) {
@@ -753,21 +796,37 @@ impl App {
         self.app_mode = AppMode::Sidebar;
     }
 
-    pub fn sidebar_lines(&self) -> Vec<SidebarLine> {
+    pub fn sidebar_lines(&mut self) -> &[SidebarLine] {
         let _guard = perf::scope("sidebar_lines");
-        if !self.sidebar.search_query.is_empty() {
-            return self.sidebar_search_lines();
+        if self.sidebar.search_query.is_empty() {
+            if self.sidebar_cache.lines_dirty {
+                let mut lines = Vec::new();
+                self.collect_sidebar_lines(
+                    self.sidebar_tree.root_id,
+                    &[],
+                    true,
+                    true,
+                    &mut lines,
+                );
+                self.sidebar_cache.lines = lines;
+                self.sidebar_cache.lines_dirty = false;
+            }
+            return &self.sidebar_cache.lines;
         }
 
-        let mut lines = Vec::new();
-        self.collect_sidebar_lines(self.sidebar_tree.root_id, &[], true, true, &mut lines);
-        lines
+        let query = self.sidebar.search_query.as_str();
+        if self.sidebar_cache.search_dirty || self.sidebar_cache.search_query != query {
+            self.sidebar_cache.search_lines = self.sidebar_search_lines_for(query);
+            self.sidebar_cache.search_query = query.to_string();
+            self.sidebar_cache.search_dirty = false;
+        }
+        &self.sidebar_cache.search_lines
     }
 
-    fn sidebar_search_lines(&self) -> Vec<SidebarLine> {
+    fn sidebar_search_lines_for(&self, query: &str) -> Vec<SidebarLine> {
         let _guard = perf::scope("sidebar_search_lines");
         let mut lines = Vec::new();
-        let query = self.sidebar.search_query.to_lowercase();
+        let query = query.to_lowercase();
         for (id, node) in &self.sidebar_tree.nodes {
             if node.kind == NodeKind::Project {
                 continue;
@@ -775,10 +834,9 @@ impl App {
             if node.name.to_lowercase().contains(&query) {
                 let path = self.sidebar_tree.path_for(*id).join("/");
                 let method = if node.kind == NodeKind::Request {
-                    self.collection
-                        .get_item(*id)
-                        .and_then(|item| item.request.as_ref())
-                        .map(|request| HttpMethod::from_str(&request.method))
+                    node.request_method
+                        .as_deref()
+                        .map(HttpMethod::from_str)
                 } else {
                     None
                 };
@@ -813,10 +871,9 @@ impl App {
                 NodeKind::Request => "•",
             };
             let method = if node.kind == NodeKind::Request {
-                self.collection
-                    .get_item(node.id)
-                    .and_then(|item| item.request.as_ref())
-                    .map(|request| HttpMethod::from_str(&request.method))
+                node.request_method
+                    .as_deref()
+                    .map(HttpMethod::from_str)
             } else {
                 None
             };
@@ -867,9 +924,11 @@ impl App {
         if lines.is_empty() {
             return;
         }
-        let mut index = self.sidebar_selected_index(&lines) as i32;
+        let mut index = self.sidebar_selected_index(lines) as i32;
         index = (index + delta).clamp(0, (lines.len() - 1) as i32);
-        self.sidebar.selection_id = Some(lines[index as usize].id);
+        let next_id = lines[index as usize].id;
+        drop(lines);
+        self.sidebar.selection_id = Some(next_id);
     }
 
     fn sidebar_selected_node(&self) -> Option<&TreeNode> {
@@ -988,6 +1047,7 @@ impl App {
             KeyCode::Esc => {
                 if !self.sidebar.search_query.is_empty() {
                     self.sidebar.search_query.clear();
+                    self.mark_sidebar_search_dirty();
                 }
             }
             _ => {}
@@ -1029,13 +1089,16 @@ impl App {
             SidebarPopup::Search(input) => {
                 if key.code == KeyCode::Enter {
                     self.sidebar.search_query = input.value.clone();
+                    self.mark_sidebar_search_dirty();
                     close = true;
                 } else if key.code == KeyCode::Esc {
                     self.sidebar.search_query.clear();
+                    self.mark_sidebar_search_dirty();
                     close = true;
                 } else {
                     handle_text_input(input, key);
                     self.sidebar.search_query = input.value.clone();
+                    self.mark_sidebar_search_dirty();
                 }
             }
             SidebarPopup::ProjectSwitch { index } => match key.code {
@@ -1295,6 +1358,7 @@ impl App {
                 } else {
                     self.sidebar.expanded.insert(node_id);
                 }
+                self.mark_sidebar_dirty();
             }
         }
     }
@@ -1316,6 +1380,7 @@ impl App {
             NodeKind::Folder | NodeKind::Project => {
                 if is_expanded {
                     self.sidebar.expanded.remove(&node_id);
+                    self.mark_sidebar_dirty();
                 } else if let Some(parent) = node_parent {
                     self.sidebar.selection_id = Some(parent);
                 }
@@ -1325,6 +1390,7 @@ impl App {
 
     fn collapse_all(&mut self) {
         self.sidebar.expanded.clear();
+        self.mark_sidebar_dirty();
     }
 
     fn expand_all(&mut self) {
@@ -1340,6 +1406,7 @@ impl App {
                 }
             })
             .collect();
+        self.mark_sidebar_dirty();
     }
 
     fn indent_selected(&mut self) {
@@ -1400,6 +1467,7 @@ impl App {
         self.rebuild_sidebar_tree();
         self.sidebar.selection_id = Some(project_id);
         self.sidebar.search_query.clear();
+        self.mark_sidebar_search_dirty();
         self.persist_ui_state();
     }
 

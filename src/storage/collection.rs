@@ -20,6 +20,7 @@ pub struct TreeNode {
     pub id: Uuid,
     pub name: String,
     pub kind: NodeKind,
+    pub request_method: Option<String>,
     pub parent_id: Option<Uuid>,
     pub children: Vec<Uuid>,
 }
@@ -126,6 +127,7 @@ impl CollectionStore {
             id: project_id,
             name: project_item.name.clone(),
             kind: NodeKind::Project,
+            request_method: None,
             parent_id: None,
             children: Vec::new(),
         };
@@ -370,10 +372,12 @@ fn build_tree_node(item: &PostmanItem, parent_id: Uuid, nodes: &mut HashMap<Uuid
     } else {
         NodeKind::Folder
     };
+    let request_method = item.request.as_ref().map(|request| request.method.clone());
     let mut node = TreeNode {
         id,
         name: item.name.clone(),
         kind,
+        request_method,
         parent_id: Some(parent_id),
         children: Vec::new(),
     };

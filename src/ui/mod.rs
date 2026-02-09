@@ -43,7 +43,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 }
 
-fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
+fn render_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
     let border_color = if app.focus.panel == Panel::Sidebar {
         Color::Green
     } else {
@@ -64,6 +64,9 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
         .map(|p| p.name.clone())
         .unwrap_or_else(|| "Project".to_string());
 
+    let search_query = app.sidebar.search_query.clone();
+    let selected_id = app.sidebar.selection_id;
+
     let mut lines: Vec<Line> = Vec::new();
     let header = Line::from(vec![
         Span::styled(
@@ -76,16 +79,15 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
     lines.push(header);
     lines.push(Line::from(""));
 
-    if !app.sidebar.search_query.is_empty() {
+    if !search_query.is_empty() {
         lines.push(Line::from(Span::styled(
-            format!("Search: {}", app.sidebar.search_query),
+            format!("Search: {}", search_query),
             Style::default().fg(Color::Yellow),
         )));
         lines.push(Line::from(""));
     }
 
     let items = app.sidebar_lines();
-    let selected_id = app.sidebar.selection_id;
     let width = inner.width as usize;
 
     if items.is_empty() {
@@ -94,7 +96,7 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::DarkGray),
         )));
     } else {
-        for item in items {
+        for item in items.iter() {
             let is_selected = Some(item.id) == selected_id;
             let base_style = if is_selected {
                 Style::default().bg(Color::DarkGray).fg(Color::White)
@@ -150,6 +152,7 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
     frame.render_widget(paragraph, inner);
 
+    drop(items);
     if let Some(popup) = &app.sidebar.popup {
         render_sidebar_popup(frame, app, popup, area);
     }
