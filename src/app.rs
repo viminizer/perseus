@@ -909,8 +909,8 @@ impl App {
         }
     }
 
-    pub fn sidebar_selected_index(&self, lines: &[SidebarLine]) -> usize {
-        let Some(selected) = self.sidebar.selection_id else {
+    fn sidebar_selected_index(selected: Option<Uuid>, lines: &[SidebarLine]) -> usize {
+        let Some(selected) = selected else {
             return 0;
         };
         lines
@@ -920,14 +920,14 @@ impl App {
     }
 
     fn sidebar_move_selection(&mut self, delta: i32) {
+        let selected = self.sidebar.selection_id;
         let lines = self.sidebar_lines();
         if lines.is_empty() {
             return;
         }
-        let mut index = self.sidebar_selected_index(lines) as i32;
+        let mut index = Self::sidebar_selected_index(selected, lines) as i32;
         index = (index + delta).clamp(0, (lines.len() - 1) as i32);
         let next_id = lines[index as usize].id;
-        drop(lines);
         self.sidebar.selection_id = Some(next_id);
     }
 

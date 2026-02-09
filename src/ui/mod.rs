@@ -87,72 +87,73 @@ fn render_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
         lines.push(Line::from(""));
     }
 
-    let items = app.sidebar_lines();
     let width = inner.width as usize;
+    {
+        let items = app.sidebar_lines();
+        if items.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "No items",
+                Style::default().fg(Color::DarkGray),
+            )));
+        } else {
+            for item in items.iter() {
+                let is_selected = Some(item.id) == selected_id;
+                let base_style = if is_selected {
+                    Style::default().bg(Color::DarkGray).fg(Color::White)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                let mut spans: Vec<Span> = Vec::new();
+                let mut text_len: usize = 0;
 
-    if items.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "No items",
-            Style::default().fg(Color::DarkGray),
-        )));
-    } else {
-        for item in items.iter() {
-            let is_selected = Some(item.id) == selected_id;
-            let base_style = if is_selected {
-                Style::default().bg(Color::DarkGray).fg(Color::White)
-            } else {
-                Style::default().fg(Color::White)
-            };
-            let mut spans: Vec<Span> = Vec::new();
-            let mut text_len: usize = 0;
-
-            let push_span = |content: String, style: Style, spans: &mut Vec<Span>, len: &mut usize| {
-                *len = len.saturating_add(content.chars().count());
-                spans.push(Span::styled(content, style));
-            };
-
-            if !item.prefix.is_empty() {
-                push_span(item.prefix.clone(), base_style, &mut spans, &mut text_len);
-            }
-
-            match item.kind {
-                NodeKind::Request => {
-                    if let Some(method) = item.method {
-                        let method_style = base_style.fg(method_color(method));
-                        push_span(
-                            method.as_str().to_string(),
-                            method_style,
-                            &mut spans,
-                            &mut text_len,
-                        );
-                        push_span(" ".to_string(), base_style, &mut spans, &mut text_len);
-                    }
-                    push_span(item.label.clone(), base_style, &mut spans, &mut text_len);
-                }
-                NodeKind::Folder | NodeKind::Project => {
-                    let label = if item.marker.is_empty() {
-                        item.label.clone()
-                    } else {
-                        format!("{} {}", item.marker, item.label)
+                let push_span =
+                    |content: String, style: Style, spans: &mut Vec<Span>, len: &mut usize| {
+                        *len = len.saturating_add(content.chars().count());
+                        spans.push(Span::styled(content, style));
                     };
-                    push_span(label, base_style, &mut spans, &mut text_len);
+
+                if !item.prefix.is_empty() {
+                    push_span(item.prefix.clone(), base_style, &mut spans, &mut text_len);
                 }
-            }
 
-            let max_width = width.saturating_sub(1);
-            if max_width > text_len {
-                let padding = " ".repeat(max_width - text_len);
-                push_span(padding, base_style, &mut spans, &mut text_len);
-            }
+                match item.kind {
+                    NodeKind::Request => {
+                        if let Some(method) = item.method {
+                            let method_style = base_style.fg(method_color(method));
+                            push_span(
+                                method.as_str().to_string(),
+                                method_style,
+                                &mut spans,
+                                &mut text_len,
+                            );
+                            push_span(" ".to_string(), base_style, &mut spans, &mut text_len);
+                        }
+                        push_span(item.label.clone(), base_style, &mut spans, &mut text_len);
+                    }
+                    NodeKind::Folder | NodeKind::Project => {
+                        let label = if item.marker.is_empty() {
+                            item.label.clone()
+                        } else {
+                            format!("{} {}", item.marker, item.label)
+                        };
+                        push_span(label, base_style, &mut spans, &mut text_len);
+                    }
+                }
 
-            lines.push(Line::from(spans));
+                let max_width = width.saturating_sub(1);
+                if max_width > text_len {
+                    let padding = " ".repeat(max_width - text_len);
+                    push_span(padding, base_style, &mut spans, &mut text_len);
+                }
+
+                lines.push(Line::from(spans));
+            }
         }
     }
 
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
     frame.render_widget(paragraph, inner);
 
-    drop(items);
     if let Some(popup) = &app.sidebar.popup {
         render_sidebar_popup(frame, app, popup, area);
     }
