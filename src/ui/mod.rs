@@ -16,6 +16,7 @@ use crate::app::{
     App, AppMode, HttpMethod, Panel, RequestField, RequestTab, ResponseBodyRenderCache,
     ResponseHeadersRenderCache, ResponseStatus, ResponseTab, SidebarPopup, WrapCache,
 };
+use crate::perf;
 use crate::storage::NodeKind;
 use crate::vim::VimMode;
 
@@ -833,6 +834,7 @@ fn render_wrapped_response_cached(
     scroll_offset: u16,
     show_cursor: bool,
 ) {
+    let _guard = perf::scope("render_wrapped_response_cached");
     if area.height == 0 || area.width == 0 {
         return;
     }
@@ -898,6 +900,7 @@ fn wrap_lines_with_cursor(
     cursor: Option<(usize, usize)>,
     selection: Option<((usize, usize), (usize, usize))>,
 ) -> (Vec<Line<'static>>, Option<(usize, usize)>) {
+    let _guard = perf::scope("wrap_lines_with_cursor");
     let width = width.max(1);
     let mut wrapped_lines = Vec::new();
     let mut cursor_pos: Option<(usize, usize)> = None;

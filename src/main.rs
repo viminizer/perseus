@@ -1,6 +1,7 @@
 mod app;
 mod clipboard;
 mod http;
+mod perf;
 mod storage;
 mod ui;
 mod vim;

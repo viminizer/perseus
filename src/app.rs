@@ -21,6 +21,7 @@ use tui_textarea::{Input, TextArea};
 use uuid::Uuid;
 
 use crate::clipboard::ClipboardProvider;
+use crate::perf;
 use crate::storage::{
     self, CollectionStore, NodeKind, PostmanHeader, PostmanItem, PostmanRequest, ProjectInfo,
     ProjectTree, TreeNode,
@@ -749,6 +750,7 @@ impl App {
     }
 
     pub fn sidebar_lines(&self) -> Vec<SidebarLine> {
+        let _guard = perf::scope("sidebar_lines");
         if !self.sidebar.search_query.is_empty() {
             return self.sidebar_search_lines();
         }
@@ -759,6 +761,7 @@ impl App {
     }
 
     fn sidebar_search_lines(&self) -> Vec<SidebarLine> {
+        let _guard = perf::scope("sidebar_search_lines");
         let mut lines = Vec::new();
         let query = self.sidebar.search_query.to_lowercase();
         for (id, node) in &self.sidebar_tree.nodes {
@@ -1757,8 +1760,11 @@ impl App {
         let (tx, mut rx) = mpsc::channel::<Result<ResponseData, String>>(1);
 
         while self.running {
+            let _loop_guard = perf::scope("event_loop_tick");
             self.prepare_editors();
+            let _draw_guard = perf::scope("terminal.draw");
             terminal.draw(|frame| {
+                let _render_guard = perf::scope("ui::render");
                 ui::render(frame, self);
             })?;
 
