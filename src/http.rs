@@ -2,7 +2,14 @@ use std::time::Instant;
 
 use reqwest::Client;
 
-use crate::app::{HttpMethod, Method, ResponseData};
+use crate::app::{ApiKeyLocation, HttpMethod, Method, ResponseData};
+
+pub enum AuthConfig {
+    NoAuth,
+    Bearer { token: String },
+    Basic { username: String, password: String },
+    ApiKey { key: String, value: String, location: ApiKeyLocation },
+}
 
 pub async fn send_request(
     client: &Client,
@@ -10,6 +17,7 @@ pub async fn send_request(
     url: &str,
     headers: &str,
     body: &str,
+    auth: &AuthConfig,
 ) -> Result<ResponseData, String> {
     let start = Instant::now();
 
@@ -28,6 +36,17 @@ pub async fn send_request(
                 .map_err(|e| format!("Invalid HTTP method '{}': {}", s, e))?;
             client.request(method, url)
         }
+    };
+
+    // Inject authentication
+    builder = match auth {
+        AuthConfig::NoAuth => builder,
+        AuthConfig::Bearer { token } => builder.bearer_auth(token),
+        AuthConfig::Basic { username, password } => builder.basic_auth(username, Some(password)),
+        AuthConfig::ApiKey { key, value, location } => match location {
+            ApiKeyLocation::Header => builder.header(key.as_str(), value.as_str()),
+            ApiKeyLocation::QueryParam => builder.query(&[(key.as_str(), value.as_str())]),
+        },
     };
 
     for line in headers.lines() {

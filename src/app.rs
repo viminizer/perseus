@@ -67,11 +67,13 @@ fn response_tab_from_str(value: &str) -> ResponseTab {
 pub enum RequestTab {
     #[default]
     Headers,
+    Auth,
     Body,
 }
 
 fn request_tab_from_str(value: &str) -> RequestTab {
     match value {
+        "Auth" => RequestTab::Auth,
         "Body" => RequestTab::Body,
         _ => RequestTab::Headers,
     }
@@ -80,6 +82,7 @@ fn request_tab_from_str(value: &str) -> RequestTab {
 fn request_tab_to_str(value: RequestTab) -> &'static str {
     match value {
         RequestTab::Headers => "Headers",
+        RequestTab::Auth => "Auth",
         RequestTab::Body => "Body",
     }
 }
@@ -219,6 +222,65 @@ impl From<HttpMethod> for Method {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AuthType {
+    #[default]
+    NoAuth,
+    Bearer,
+    Basic,
+    ApiKey,
+}
+
+impl AuthType {
+    pub const ALL: [AuthType; 4] = [
+        AuthType::NoAuth,
+        AuthType::Bearer,
+        AuthType::Basic,
+        AuthType::ApiKey,
+    ];
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AuthType::NoAuth => "No Auth",
+            AuthType::Bearer => "Bearer Token",
+            AuthType::Basic => "Basic Auth",
+            AuthType::ApiKey => "API Key",
+        }
+    }
+
+    pub fn from_index(index: usize) -> Self {
+        Self::ALL[index % Self::ALL.len()]
+    }
+
+    pub fn index(&self) -> usize {
+        match self {
+            AuthType::NoAuth => 0,
+            AuthType::Bearer => 1,
+            AuthType::Basic => 2,
+            AuthType::ApiKey => 3,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ApiKeyLocation {
+    #[default]
+    Header,
+    QueryParam,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AuthField {
+    #[default]
+    AuthType,
+    Token,
+    Username,
+    Password,
+    KeyName,
+    KeyValue,
+    KeyLocation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[allow(dead_code)]
 pub enum Panel {
     Sidebar,
@@ -234,6 +296,7 @@ pub enum RequestField {
     Url,
     Send,
     Headers,
+    Auth,
     Body,
 }
 
@@ -241,6 +304,7 @@ pub enum RequestField {
 pub struct FocusState {
     pub panel: Panel,
     pub request_field: RequestField,
+    pub auth_field: AuthField,
 }
 
 #[derive(Debug, Clone)]
@@ -352,6 +416,13 @@ pub struct RequestState {
     pub url_editor: TextArea<'static>,
     pub headers_editor: TextArea<'static>,
     pub body_editor: TextArea<'static>,
+    pub auth_type: AuthType,
+    pub api_key_location: ApiKeyLocation,
+    pub auth_token_editor: TextArea<'static>,
+    pub auth_username_editor: TextArea<'static>,
+    pub auth_password_editor: TextArea<'static>,
+    pub auth_key_name_editor: TextArea<'static>,
+    pub auth_key_value_editor: TextArea<'static>,
 }
 
 #[derive(Clone, Copy)]
@@ -372,11 +443,33 @@ impl RequestState {
         let mut body_editor = TextArea::default();
         configure_editor(&mut body_editor, "Request body...");
 
+        let mut auth_token_editor = TextArea::default();
+        configure_editor(&mut auth_token_editor, "Token");
+
+        let mut auth_username_editor = TextArea::default();
+        configure_editor(&mut auth_username_editor, "Username");
+
+        let mut auth_password_editor = TextArea::default();
+        configure_editor(&mut auth_password_editor, "Password");
+
+        let mut auth_key_name_editor = TextArea::default();
+        configure_editor(&mut auth_key_name_editor, "Key name");
+
+        let mut auth_key_value_editor = TextArea::default();
+        configure_editor(&mut auth_key_value_editor, "Key value");
+
         Self {
             method: Method::default(),
             url_editor,
             headers_editor,
             body_editor,
+            auth_type: AuthType::NoAuth,
+            api_key_location: ApiKeyLocation::Header,
+            auth_token_editor,
+            auth_username_editor,
+            auth_password_editor,
+            auth_key_name_editor,
+            auth_key_value_editor,
         }
     }
 
@@ -400,6 +493,23 @@ impl RequestState {
         configure_editor(&mut self.headers_editor, "Key: Value");
         self.body_editor = TextArea::new(body_lines);
         configure_editor(&mut self.body_editor, "Request body...");
+
+        self.reset_auth();
+    }
+
+    pub fn reset_auth(&mut self) {
+        self.auth_type = AuthType::NoAuth;
+        self.api_key_location = ApiKeyLocation::Header;
+        self.auth_token_editor = TextArea::default();
+        configure_editor(&mut self.auth_token_editor, "Token");
+        self.auth_username_editor = TextArea::default();
+        configure_editor(&mut self.auth_username_editor, "Username");
+        self.auth_password_editor = TextArea::default();
+        configure_editor(&mut self.auth_password_editor, "Password");
+        self.auth_key_name_editor = TextArea::default();
+        configure_editor(&mut self.auth_key_name_editor, "Key name");
+        self.auth_key_value_editor = TextArea::default();
+        configure_editor(&mut self.auth_key_value_editor, "Key value");
     }
 
     pub fn url_text(&self) -> String {
@@ -414,12 +524,50 @@ impl RequestState {
         self.body_editor.lines().join("\n")
     }
 
+    pub fn auth_token_text(&self) -> String {
+        self.auth_token_editor.lines().join("")
+    }
+
+    pub fn auth_username_text(&self) -> String {
+        self.auth_username_editor.lines().join("")
+    }
+
+    pub fn auth_password_text(&self) -> String {
+        self.auth_password_editor.lines().join("")
+    }
+
+    pub fn auth_key_name_text(&self) -> String {
+        self.auth_key_name_editor.lines().join("")
+    }
+
+    pub fn auth_key_value_text(&self) -> String {
+        self.auth_key_value_editor.lines().join("")
+    }
+
+    pub fn build_auth_config(&self) -> http::AuthConfig {
+        match self.auth_type {
+            AuthType::NoAuth => http::AuthConfig::NoAuth,
+            AuthType::Bearer => http::AuthConfig::Bearer {
+                token: self.auth_token_text(),
+            },
+            AuthType::Basic => http::AuthConfig::Basic {
+                username: self.auth_username_text(),
+                password: self.auth_password_text(),
+            },
+            AuthType::ApiKey => http::AuthConfig::ApiKey {
+                key: self.auth_key_name_text(),
+                value: self.auth_key_value_text(),
+                location: self.api_key_location,
+            },
+        }
+    }
+
     pub fn active_editor(&mut self, field: RequestField) -> Option<&mut TextArea<'static>> {
         match field {
             RequestField::Url => Some(&mut self.url_editor),
             RequestField::Headers => Some(&mut self.headers_editor),
             RequestField::Body => Some(&mut self.body_editor),
-            RequestField::Method | RequestField::Send => None,
+            RequestField::Method | RequestField::Send | RequestField::Auth => None,
         }
     }
 }
@@ -510,6 +658,8 @@ pub struct App {
     pub method_popup_index: usize,
     pub method_popup_custom_mode: bool,
     pub method_custom_input: String,
+    pub show_auth_type_popup: bool,
+    pub auth_type_popup_index: usize,
     pub sidebar_visible: bool,
     pub sidebar_width: u16,
     pub collection: CollectionStore,
@@ -678,6 +828,8 @@ impl App {
             method_popup_index: 0,
             method_popup_custom_mode: false,
             method_custom_input: String::new(),
+            show_auth_type_popup: false,
+            auth_type_popup_index: 0,
             sidebar_visible,
             sidebar_width,
             collection,
@@ -735,6 +887,11 @@ impl App {
         self.request.url_editor.set_tab_length(tab);
         self.request.headers_editor.set_tab_length(tab);
         self.request.body_editor.set_tab_length(tab);
+        self.request.auth_token_editor.set_tab_length(tab);
+        self.request.auth_username_editor.set_tab_length(tab);
+        self.request.auth_password_editor.set_tab_length(tab);
+        self.request.auth_key_name_editor.set_tab_length(tab);
+        self.request.auth_key_value_editor.set_tab_length(tab);
     }
 
     fn build_client(config: &Config) -> Result<Client> {
@@ -1117,28 +1274,98 @@ impl App {
         } else {
             Some(body_raw)
         };
-        PostmanRequest::new(method, url, headers, body)
+        let auth = match self.request.auth_type {
+            AuthType::NoAuth => None,
+            AuthType::Bearer => {
+                Some(storage::PostmanAuth::bearer(&self.request.auth_token_text()))
+            }
+            AuthType::Basic => Some(storage::PostmanAuth::basic(
+                &self.request.auth_username_text(),
+                &self.request.auth_password_text(),
+            )),
+            AuthType::ApiKey => Some(storage::PostmanAuth::apikey(
+                &self.request.auth_key_name_text(),
+                &self.request.auth_key_value_text(),
+                if self.request.api_key_location == ApiKeyLocation::Header {
+                    "header"
+                } else {
+                    "query"
+                },
+            )),
+        };
+        let mut req = PostmanRequest::new(method, url, headers, body);
+        req.auth = auth;
+        req
     }
 
     fn open_request(&mut self, request_id: Uuid) {
         self.save_current_request_if_dirty();
-        if let Some(item) = self.collection.get_item(request_id) {
-            if let Some(request) = &item.request {
-                let method = Method::from_str(&request.method);
-                let url = extract_url(&request.url);
-                let headers = headers_to_text(&request.header);
-                let body = request
-                    .body
-                    .as_ref()
-                    .and_then(|b| b.raw.clone())
-                    .unwrap_or_default();
-                self.request.set_contents(method, url, headers, body);
-                self.apply_editor_tab_size();
-                self.current_request_id = Some(request_id);
-                self.request_dirty = false;
-                self.focus.panel = Panel::Request;
-                self.focus.request_field = RequestField::Url;
+        let request_data = self
+            .collection
+            .get_item(request_id)
+            .and_then(|item| item.request.clone());
+        if let Some(request) = request_data {
+            let method = Method::from_str(&request.method);
+            let url = extract_url(&request.url);
+            let headers = headers_to_text(&request.header);
+            let body = request
+                .body
+                .as_ref()
+                .and_then(|b| b.raw.clone())
+                .unwrap_or_default();
+            self.request.set_contents(method, url, headers, body);
+            self.load_auth_from_postman(&request);
+            self.apply_editor_tab_size();
+            self.current_request_id = Some(request_id);
+            self.request_dirty = false;
+            self.focus.panel = Panel::Request;
+            self.focus.request_field = RequestField::Url;
+        }
+    }
+
+    fn load_auth_from_postman(&mut self, request: &PostmanRequest) {
+        if let Some(auth) = &request.auth {
+            match auth.auth_type.as_str() {
+                "bearer" => {
+                    self.request.auth_type = AuthType::Bearer;
+                    if let Some(token) = auth.get_bearer_token() {
+                        self.request.auth_token_editor =
+                            TextArea::new(vec![token.to_string()]);
+                        configure_editor(&mut self.request.auth_token_editor, "Token");
+                    }
+                }
+                "basic" => {
+                    self.request.auth_type = AuthType::Basic;
+                    if let Some((username, password)) = auth.get_basic_credentials() {
+                        self.request.auth_username_editor =
+                            TextArea::new(vec![username.to_string()]);
+                        configure_editor(&mut self.request.auth_username_editor, "Username");
+                        self.request.auth_password_editor =
+                            TextArea::new(vec![password.to_string()]);
+                        configure_editor(&mut self.request.auth_password_editor, "Password");
+                    }
+                }
+                "apikey" => {
+                    self.request.auth_type = AuthType::ApiKey;
+                    if let Some((key, value, location)) = auth.get_apikey() {
+                        self.request.auth_key_name_editor =
+                            TextArea::new(vec![key.to_string()]);
+                        configure_editor(&mut self.request.auth_key_name_editor, "Key name");
+                        self.request.auth_key_value_editor =
+                            TextArea::new(vec![value.to_string()]);
+                        configure_editor(&mut self.request.auth_key_value_editor, "Key value");
+                        self.request.api_key_location = match location {
+                            "query" => ApiKeyLocation::QueryParam,
+                            _ => ApiKeyLocation::Header,
+                        };
+                    }
+                }
+                _ => {
+                    self.request.auth_type = AuthType::NoAuth;
+                }
             }
+        } else {
+            self.request.auth_type = AuthType::NoAuth;
         }
     }
 
@@ -1677,7 +1904,8 @@ impl App {
                 RequestField::Url | RequestField::Headers | RequestField::Body => {
                     Some(YankTarget::Request)
                 }
-                RequestField::Method | RequestField::Send => None,
+                RequestField::Auth if self.is_auth_text_field() => Some(YankTarget::Request),
+                _ => None,
             },
             Panel::Sidebar => None,
         }
@@ -1711,8 +1939,8 @@ impl App {
                 }
             },
             Panel::Request => {
-                if let Some(textarea) = self.request.active_editor(self.focus.request_field) {
-                    let yank = textarea.yank_text();
+                let yank = self.active_request_editor().map(|ta| ta.yank_text());
+                if let Some(yank) = yank {
                     if self.last_yank_request != yank {
                         self.last_yank_request = yank.clone();
                         new_yank = Some(yank);
@@ -1745,29 +1973,30 @@ impl App {
 
         let mut last_yank_update: Option<(YankTarget, String)> = None;
         let mut exit_to_normal = false;
+        let vim_mode = self.vim.mode;
 
         match target {
             YankTarget::Request => {
-                if let Some(textarea) = self.request.active_editor(self.focus.request_field) {
+                if let Some(textarea) = self.active_request_editor() {
                     if let Some(text) = clipboard_text.as_ref() {
                         textarea.set_yank_text(text.clone());
-                        if self.vim.mode == VimMode::Insert {
+                        if vim_mode == VimMode::Insert {
                             textarea.insert_str(text.as_str());
                         } else {
                             textarea.paste();
-                            if matches!(self.vim.mode, VimMode::Visual | VimMode::Operator(_)) {
+                            if matches!(vim_mode, VimMode::Visual | VimMode::Operator(_)) {
                                 exit_to_normal = true;
                             }
                         }
                         last_yank_update = Some((target, text.clone()));
-                    } else if self.vim.mode == VimMode::Insert {
+                    } else if vim_mode == VimMode::Insert {
                         let fallback = textarea.yank_text();
                         if !fallback.is_empty() {
                             textarea.insert_str(fallback);
                         }
                     } else {
                         textarea.paste();
-                        if matches!(self.vim.mode, VimMode::Visual | VimMode::Operator(_)) {
+                        if matches!(vim_mode, VimMode::Visual | VimMode::Operator(_)) {
                             exit_to_normal = true;
                         }
                     }
@@ -1843,14 +2072,15 @@ impl App {
 
         let mut yank: Option<String> = None;
         let mut exit_visual = false;
+        let vim_mode = self.vim.mode;
 
         match target {
             YankTarget::Request => {
-                if let Some(textarea) = self.request.active_editor(self.focus.request_field) {
+                if let Some(textarea) = self.active_request_editor() {
                     if textarea.is_selecting() {
                         textarea.copy();
                         yank = Some(textarea.yank_text());
-                        if self.vim.mode == VimMode::Visual {
+                        if vim_mode == VimMode::Visual {
                             exit_visual = true;
                         }
                     }
@@ -1957,6 +2187,9 @@ impl App {
         };
         self.request.body_editor.set_cursor_style(cursor_style);
 
+        // Auth editors — prepare only the ones relevant to current auth type
+        self.prepare_auth_editors();
+
         // Response editor block/cursor
         let response_editing = is_editing && self.focus.panel == Panel::Response;
         self.response_editor.set_block(Block::default().borders(Borders::NONE));
@@ -1970,6 +2203,45 @@ impl App {
         self.response_editor.set_cursor_style(response_cursor);
         self.response_headers_editor
             .set_cursor_style(response_cursor);
+    }
+
+    fn prepare_auth_editors(&mut self) {
+        let is_editing = self.app_mode == AppMode::Editing;
+        let in_auth = self.focus.panel == Panel::Request
+            && self.focus.request_field == RequestField::Auth;
+        let auth_field = self.focus.auth_field;
+        let hidden_cursor = Style::default().fg(Color::DarkGray);
+        let vim_style = self.vim_cursor_style();
+
+        let cursor_for = |field: AuthField| -> Style {
+            if is_editing && in_auth && auth_field == field {
+                vim_style
+            } else {
+                hidden_cursor
+            }
+        };
+
+        let auth_block = Block::default().borders(Borders::NONE);
+
+        match self.request.auth_type {
+            AuthType::Bearer => {
+                self.request.auth_token_editor.set_block(auth_block);
+                self.request.auth_token_editor.set_cursor_style(cursor_for(AuthField::Token));
+            }
+            AuthType::Basic => {
+                self.request.auth_username_editor.set_block(auth_block.clone());
+                self.request.auth_username_editor.set_cursor_style(cursor_for(AuthField::Username));
+                self.request.auth_password_editor.set_block(auth_block);
+                self.request.auth_password_editor.set_cursor_style(cursor_for(AuthField::Password));
+            }
+            AuthType::ApiKey => {
+                self.request.auth_key_name_editor.set_block(auth_block.clone());
+                self.request.auth_key_name_editor.set_cursor_style(cursor_for(AuthField::KeyName));
+                self.request.auth_key_value_editor.set_block(auth_block);
+                self.request.auth_key_value_editor.set_cursor_style(cursor_for(AuthField::KeyValue));
+            }
+            AuthType::NoAuth => {}
+        }
     }
 
     fn vim_cursor_style(&self) -> Style {
@@ -2113,6 +2385,12 @@ impl App {
             if key.code == KeyCode::Char('?') || key.code == KeyCode::Esc {
                 self.show_help = false;
             }
+            return;
+        }
+
+        // Handle auth type popup when open
+        if self.show_auth_type_popup {
+            self.handle_auth_type_popup(key);
             return;
         }
 
@@ -2286,6 +2564,21 @@ impl App {
             }
         }
 
+        // Auth sub-field navigation: j/k navigates within auth fields when focused
+        if in_request && self.focus.request_field == RequestField::Auth {
+            match key.code {
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.next_auth_field();
+                    return;
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.prev_auth_field();
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         // Arrow keys + bare hjkl for navigation
         match key.code {
             KeyCode::Left | KeyCode::Char('h') => {
@@ -2341,6 +2634,9 @@ impl App {
                         RequestField::Url | RequestField::Headers | RequestField::Body => {
                             self.enter_editing(VimMode::Normal);
                         }
+                        RequestField::Auth => {
+                            self.handle_auth_enter();
+                        }
                     }
                 } else if in_response
                     && matches!(self.response, ResponseStatus::Success(_))
@@ -2353,6 +2649,11 @@ impl App {
                 if in_sidebar {
                     self.app_mode = AppMode::Sidebar;
                 } else if in_request && self.is_editable_field() {
+                    self.enter_editing(VimMode::Insert);
+                } else if in_request
+                    && self.focus.request_field == RequestField::Auth
+                    && self.is_auth_text_field()
+                {
                     self.enter_editing(VimMode::Insert);
                 } else if in_response
                     && matches!(self.response, ResponseStatus::Success(_))
@@ -2507,7 +2808,7 @@ impl App {
                         match target {
                             YankTarget::Request => {
                                 if let Some(textarea) =
-                                    self.request.active_editor(self.focus.request_field)
+                                    self.active_request_editor()
                                 {
                                     textarea.set_yank_text(text.clone());
                                 }
@@ -2543,7 +2844,8 @@ impl App {
             }
         } else {
             let field = self.focus.request_field;
-            let single_line = field == RequestField::Url;
+            let single_line = field == RequestField::Url
+                || (field == RequestField::Auth && self.is_auth_text_field());
             if let Some(textarea) = self.request.active_editor(field) {
                 self.vim.transition(input, textarea, single_line)
             } else {
@@ -2649,9 +2951,11 @@ impl App {
         let method = self.request.method.clone();
         let headers = self.request.headers_text();
         let body = self.request.body_text();
+        let auth = self.request.build_auth_config();
 
         let handle = tokio::spawn(async move {
-            let result = http::send_request(&client, &method, &url, &headers, &body).await;
+            let result =
+                http::send_request(&client, &method, &url, &headers, &body, &auth).await;
             let _ = tx.send(result).await;
         });
         self.request_handle = Some(handle.abort_handle());
@@ -2665,10 +2969,11 @@ impl App {
     }
 
     fn is_editable_field(&self) -> bool {
-        matches!(
-            self.focus.request_field,
-            RequestField::Url | RequestField::Headers | RequestField::Body
-        )
+        match self.focus.request_field {
+            RequestField::Url | RequestField::Headers | RequestField::Body => true,
+            RequestField::Auth => self.is_auth_text_field(),
+            _ => false,
+        }
     }
 
     fn next_horizontal(&mut self) {
@@ -2682,7 +2987,9 @@ impl App {
                     RequestField::Method => RequestField::Url,
                     RequestField::Url => RequestField::Send,
                     RequestField::Send => RequestField::Method,
-                    RequestField::Headers | RequestField::Body => RequestField::Url,
+                    RequestField::Headers | RequestField::Auth | RequestField::Body => {
+                        RequestField::Url
+                    }
                 };
             }
             Panel::Response => {}
@@ -2699,7 +3006,9 @@ impl App {
                         RequestField::Method => RequestField::Send,
                         RequestField::Url => RequestField::Method,
                         RequestField::Send => RequestField::Url,
-                        RequestField::Headers | RequestField::Body => RequestField::Url,
+                        RequestField::Headers | RequestField::Auth | RequestField::Body => {
+                            RequestField::Url
+                        }
                     };
                 }
             }
@@ -2719,10 +3028,11 @@ impl App {
                     RequestField::Method | RequestField::Url | RequestField::Send => {
                         match self.request_tab {
                             RequestTab::Headers => RequestField::Headers,
+                            RequestTab::Auth => RequestField::Auth,
                             RequestTab::Body => RequestField::Body,
                         }
                     }
-                    RequestField::Headers | RequestField::Body => {
+                    RequestField::Headers | RequestField::Auth | RequestField::Body => {
                         self.focus.panel = Panel::Response;
                         return;
                     }
@@ -2738,6 +3048,7 @@ impl App {
                 self.focus.panel = Panel::Request;
                 self.focus.request_field = match self.request_tab {
                     RequestTab::Headers => RequestField::Headers,
+                    RequestTab::Auth => RequestField::Auth,
                     RequestTab::Body => RequestField::Body,
                 };
             }
@@ -2746,10 +3057,13 @@ impl App {
                     RequestField::Method | RequestField::Url | RequestField::Send => {
                         match self.request_tab {
                             RequestTab::Headers => RequestField::Headers,
+                            RequestTab::Auth => RequestField::Auth,
                             RequestTab::Body => RequestField::Body,
                         }
                     }
-                    RequestField::Headers | RequestField::Body => RequestField::Url,
+                    RequestField::Headers | RequestField::Auth | RequestField::Body => {
+                        RequestField::Url
+                    }
                 };
             }
             Panel::Sidebar => {}
@@ -2758,23 +3072,35 @@ impl App {
 
     fn next_request_tab(&mut self) {
         self.request_tab = match self.request_tab {
-            RequestTab::Headers => RequestTab::Body,
+            RequestTab::Headers => RequestTab::Auth,
+            RequestTab::Auth => RequestTab::Body,
             RequestTab::Body => RequestTab::Headers,
         };
-
-        if self.focus.panel == Panel::Request {
-            self.focus.request_field = match self.focus.request_field {
-                RequestField::Headers | RequestField::Body => match self.request_tab {
-                    RequestTab::Headers => RequestField::Headers,
-                    RequestTab::Body => RequestField::Body,
-                },
-                other => other,
-            };
-        }
+        self.sync_field_to_tab();
     }
 
     fn prev_request_tab(&mut self) {
-        self.next_request_tab();
+        self.request_tab = match self.request_tab {
+            RequestTab::Headers => RequestTab::Body,
+            RequestTab::Auth => RequestTab::Headers,
+            RequestTab::Body => RequestTab::Auth,
+        };
+        self.sync_field_to_tab();
+    }
+
+    fn sync_field_to_tab(&mut self) {
+        if self.focus.panel == Panel::Request {
+            self.focus.request_field = match self.focus.request_field {
+                RequestField::Headers | RequestField::Auth | RequestField::Body => {
+                    match self.request_tab {
+                        RequestTab::Headers => RequestField::Headers,
+                        RequestTab::Auth => RequestField::Auth,
+                        RequestTab::Body => RequestField::Body,
+                    }
+                }
+                other => other,
+            };
+        }
     }
 
     fn next_response_tab(&mut self) {
@@ -2786,6 +3112,156 @@ impl App {
 
     fn prev_response_tab(&mut self) {
         self.next_response_tab();
+    }
+
+    fn handle_auth_type_popup(&mut self, key: KeyEvent) {
+        let count = AuthType::ALL.len();
+        match key.code {
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.auth_type_popup_index = (self.auth_type_popup_index + 1) % count;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.auth_type_popup_index = if self.auth_type_popup_index == 0 {
+                    count - 1
+                } else {
+                    self.auth_type_popup_index - 1
+                };
+            }
+            KeyCode::Enter => {
+                let new_type = AuthType::from_index(self.auth_type_popup_index);
+                if new_type != self.request.auth_type {
+                    self.request.auth_type = new_type;
+                    // Clear previous type's data
+                    self.request.auth_token_editor = TextArea::default();
+                    configure_editor(&mut self.request.auth_token_editor, "Token");
+                    self.request.auth_username_editor = TextArea::default();
+                    configure_editor(&mut self.request.auth_username_editor, "Username");
+                    self.request.auth_password_editor = TextArea::default();
+                    configure_editor(&mut self.request.auth_password_editor, "Password");
+                    self.request.auth_key_name_editor = TextArea::default();
+                    configure_editor(&mut self.request.auth_key_name_editor, "Key name");
+                    self.request.auth_key_value_editor = TextArea::default();
+                    configure_editor(&mut self.request.auth_key_value_editor, "Key value");
+                    self.request.api_key_location = ApiKeyLocation::Header;
+                    self.apply_editor_tab_size();
+                    self.request_dirty = true;
+                }
+                self.show_auth_type_popup = false;
+                // Move focus to first editable field of the new type
+                self.focus.auth_field = self.first_auth_field();
+            }
+            KeyCode::Esc => {
+                self.show_auth_type_popup = false;
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_auth_enter(&mut self) {
+        match self.focus.auth_field {
+            AuthField::AuthType => {
+                self.auth_type_popup_index = self.request.auth_type.index();
+                self.show_auth_type_popup = true;
+            }
+            AuthField::KeyLocation => {
+                self.request.api_key_location = match self.request.api_key_location {
+                    ApiKeyLocation::Header => ApiKeyLocation::QueryParam,
+                    ApiKeyLocation::QueryParam => ApiKeyLocation::Header,
+                };
+                self.request_dirty = true;
+            }
+            AuthField::Token
+            | AuthField::Username
+            | AuthField::Password
+            | AuthField::KeyName
+            | AuthField::KeyValue => {
+                self.enter_editing(VimMode::Normal);
+            }
+        }
+    }
+
+    fn is_auth_text_field(&self) -> bool {
+        matches!(
+            self.focus.auth_field,
+            AuthField::Token
+                | AuthField::Username
+                | AuthField::Password
+                | AuthField::KeyName
+                | AuthField::KeyValue
+        )
+    }
+
+    fn auth_fields_for_type(&self) -> &[AuthField] {
+        match self.request.auth_type {
+            AuthType::NoAuth => &[AuthField::AuthType],
+            AuthType::Bearer => &[AuthField::AuthType, AuthField::Token],
+            AuthType::Basic => &[AuthField::AuthType, AuthField::Username, AuthField::Password],
+            AuthType::ApiKey => &[
+                AuthField::AuthType,
+                AuthField::KeyName,
+                AuthField::KeyValue,
+                AuthField::KeyLocation,
+            ],
+        }
+    }
+
+    fn first_auth_field(&self) -> AuthField {
+        let fields = self.auth_fields_for_type();
+        if fields.len() > 1 {
+            fields[1]
+        } else {
+            fields[0]
+        }
+    }
+
+    fn next_auth_field(&mut self) {
+        let fields = self.auth_fields_for_type();
+        let current_idx = fields
+            .iter()
+            .position(|f| *f == self.focus.auth_field)
+            .unwrap_or(0);
+        let next_idx = if current_idx + 1 < fields.len() {
+            current_idx + 1
+        } else {
+            // At the bottom of auth fields — move to response panel
+            self.focus.panel = Panel::Response;
+            return;
+        };
+        self.focus.auth_field = fields[next_idx];
+    }
+
+    fn prev_auth_field(&mut self) {
+        let fields = self.auth_fields_for_type();
+        let current_idx = fields
+            .iter()
+            .position(|f| *f == self.focus.auth_field)
+            .unwrap_or(0);
+        if current_idx == 0 {
+            // At the top of auth fields — move to URL row
+            self.focus.request_field = RequestField::Url;
+        } else {
+            self.focus.auth_field = fields[current_idx - 1];
+        }
+    }
+
+    fn active_auth_editor(&mut self) -> Option<&mut TextArea<'static>> {
+        match self.focus.auth_field {
+            AuthField::Token => Some(&mut self.request.auth_token_editor),
+            AuthField::Username => Some(&mut self.request.auth_username_editor),
+            AuthField::Password => Some(&mut self.request.auth_password_editor),
+            AuthField::KeyName => Some(&mut self.request.auth_key_name_editor),
+            AuthField::KeyValue => Some(&mut self.request.auth_key_value_editor),
+            AuthField::AuthType | AuthField::KeyLocation => None,
+        }
+    }
+
+    /// Returns the currently active request editor, including auth TextAreas.
+    fn active_request_editor(&mut self) -> Option<&mut TextArea<'static>> {
+        if self.focus.request_field == RequestField::Auth {
+            self.active_auth_editor()
+        } else {
+            self.active_request_editor()
+        }
     }
 }
 
