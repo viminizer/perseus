@@ -697,11 +697,19 @@ impl RequestState {
         }
     }
 
-    pub fn active_editor(&mut self, field: RequestField) -> Option<&mut TextArea<'static>> {
+    pub fn active_editor(
+        &mut self,
+        field: RequestField,
+        body_field: BodyField,
+    ) -> Option<&mut TextArea<'static>> {
         match field {
             RequestField::Url => Some(&mut self.url_editor),
             RequestField::Headers => Some(&mut self.headers_editor),
-            RequestField::Body => Some(&mut self.body_editor),
+            RequestField::Body => match body_field {
+                BodyField::TextEditor => Some(&mut self.body_editor),
+                BodyField::BinaryPath => Some(&mut self.body_binary_path_editor),
+                _ => None,
+            },
             RequestField::Method | RequestField::Send | RequestField::Auth => None,
         }
     }
@@ -2337,12 +2345,35 @@ impl App {
         };
         self.request.headers_editor.set_cursor_style(cursor_style);
 
-        let cursor_style = if is_editing && body_focused {
+        // Body editors — prepare based on body mode and sub-field
+        let body_text_focused = body_focused
+            && self.focus.body_field == BodyField::TextEditor
+            && self.request.body_mode.is_text_mode();
+        let body_binary_focused = body_focused
+            && self.focus.body_field == BodyField::BinaryPath
+            && self.request.body_mode == BodyMode::Binary;
+
+        self.request
+            .body_editor
+            .set_block(Block::default().borders(Borders::NONE));
+        let cursor_style = if is_editing && body_text_focused {
             self.vim_cursor_style()
         } else {
             Style::default().fg(Color::DarkGray)
         };
         self.request.body_editor.set_cursor_style(cursor_style);
+
+        self.request
+            .body_binary_path_editor
+            .set_block(Block::default().borders(Borders::NONE));
+        let cursor_style = if is_editing && body_binary_focused {
+            self.vim_cursor_style()
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        self.request
+            .body_binary_path_editor
+            .set_cursor_style(cursor_style);
 
         // Auth editors — prepare only the ones relevant to current auth type
         self.prepare_auth_editors();
@@ -2574,6 +2605,12 @@ impl App {
             return;
         }
 
+        // Handle body mode popup when open
+        if self.show_body_mode_popup {
+            self.handle_body_mode_popup(key);
+            return;
+        }
+
         // Handle auth type popup when open
         if self.show_auth_type_popup {
             self.handle_auth_type_popup(key);
@@ -2731,6 +2768,7 @@ impl App {
         if key.code == KeyCode::Char('n') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.show_method_popup = false;
             self.show_auth_type_popup = false;
+            self.show_body_mode_popup = false;
             self.show_env_popup = !self.show_env_popup;
             if self.show_env_popup {
                 self.env_popup_index = self
@@ -2776,6 +2814,21 @@ impl App {
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
                     self.prev_auth_field();
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        // Body sub-field navigation: j/k navigates within body fields when focused
+        if in_request && self.focus.request_field == RequestField::Body {
+            match key.code {
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.next_body_field();
+                    return;
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.prev_body_field();
                     return;
                 }
                 _ => {}
@@ -2834,8 +2887,11 @@ impl App {
                                 self.send_request(tx);
                             }
                         }
-                        RequestField::Url | RequestField::Headers | RequestField::Body => {
+                        RequestField::Url | RequestField::Headers => {
                             self.enter_editing(VimMode::Normal);
+                        }
+                        RequestField::Body => {
+                            self.handle_body_enter();
                         }
                         RequestField::Auth => {
                             self.handle_auth_enter();
@@ -2851,6 +2907,8 @@ impl App {
             KeyCode::Char('i') => {
                 if in_sidebar {
                     self.app_mode = AppMode::Sidebar;
+                } else if in_request && self.focus.request_field == RequestField::Body {
+                    self.handle_body_enter();
                 } else if in_request && self.is_editable_field() {
                     self.enter_editing(VimMode::Insert);
                 } else if in_request
@@ -2885,6 +2943,7 @@ impl App {
         if key.code == KeyCode::Char('n') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.show_method_popup = false;
             self.show_auth_type_popup = false;
+            self.show_body_mode_popup = false;
             self.show_env_popup = !self.show_env_popup;
             if self.show_env_popup {
                 self.env_popup_index = self
@@ -2948,6 +3007,7 @@ impl App {
         if key.code == KeyCode::Char('n') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.show_method_popup = false;
             self.show_auth_type_popup = false;
+            self.show_body_mode_popup = false;
             self.show_env_popup = !self.show_env_popup;
             if self.show_env_popup {
                 self.env_popup_index = self
@@ -3083,7 +3143,7 @@ impl App {
             let field = self.focus.request_field;
             let single_line = field == RequestField::Url
                 || (field == RequestField::Auth && self.is_auth_text_field());
-            if let Some(textarea) = self.request.active_editor(field) {
+            if let Some(textarea) = self.request.active_editor(field, self.focus.body_field) {
                 self.vim.transition(input, textarea, single_line)
             } else {
                 self.exit_editing();
@@ -3113,7 +3173,7 @@ impl App {
                 } else {
                     let textarea = self
                         .request
-                        .active_editor(self.focus.request_field)
+                        .active_editor(self.focus.request_field, self.focus.body_field)
                         .unwrap();
                     self.vim = std::mem::replace(&mut self.vim, Vim::new(VimMode::Normal))
                         .apply_transition(Transition::Mode(new_mode), textarea);
@@ -3139,7 +3199,7 @@ impl App {
                 } else {
                     let textarea = self
                         .request
-                        .active_editor(self.focus.request_field)
+                        .active_editor(self.focus.request_field, self.focus.body_field)
                         .unwrap();
                     self.vim = std::mem::replace(&mut self.vim, Vim::new(VimMode::Normal))
                         .apply_transition(Transition::Pending(pending_input), textarea);
@@ -3246,7 +3306,11 @@ impl App {
 
     fn is_editable_field(&self) -> bool {
         match self.focus.request_field {
-            RequestField::Url | RequestField::Headers | RequestField::Body => true,
+            RequestField::Url | RequestField::Headers => true,
+            RequestField::Body => matches!(
+                self.focus.body_field,
+                BodyField::TextEditor | BodyField::BinaryPath
+            ),
             RequestField::Auth => self.is_auth_text_field(),
             _ => false,
         }
@@ -3388,6 +3452,86 @@ impl App {
 
     fn prev_response_tab(&mut self) {
         self.next_response_tab();
+    }
+
+    fn handle_body_mode_popup(&mut self, key: KeyEvent) {
+        let count = BodyMode::ALL.len();
+        match key.code {
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.body_mode_popup_index = (self.body_mode_popup_index + 1) % count;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.body_mode_popup_index = if self.body_mode_popup_index == 0 {
+                    count - 1
+                } else {
+                    self.body_mode_popup_index - 1
+                };
+            }
+            KeyCode::Enter => {
+                self.request.body_mode = BodyMode::from_index(self.body_mode_popup_index);
+                self.show_body_mode_popup = false;
+                self.request_dirty = true;
+                // Move focus to the appropriate content field
+                self.focus.body_field = self.content_body_field();
+            }
+            KeyCode::Esc => {
+                self.show_body_mode_popup = false;
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_body_enter(&mut self) {
+        match self.focus.body_field {
+            BodyField::ModeSelector => {
+                self.body_mode_popup_index = self.request.body_mode.index();
+                self.show_body_mode_popup = true;
+            }
+            BodyField::TextEditor => {
+                if self.request.body_mode.is_text_mode() {
+                    self.enter_editing(VimMode::Normal);
+                }
+            }
+            BodyField::BinaryPath => {
+                if self.request.body_mode == BodyMode::Binary {
+                    self.enter_editing(VimMode::Normal);
+                }
+            }
+            BodyField::KvRow => {
+                // KV cell editing will be handled in Phase E
+            }
+        }
+    }
+
+    fn next_body_field(&mut self) {
+        self.focus.body_field = match self.focus.body_field {
+            BodyField::ModeSelector => self.content_body_field(),
+            _ => {
+                // From content area, go to response (next_vertical handles this)
+                self.focus.panel = Panel::Response;
+                return;
+            }
+        };
+    }
+
+    fn prev_body_field(&mut self) {
+        self.focus.body_field = match self.focus.body_field {
+            BodyField::ModeSelector => {
+                // Go up to URL row
+                self.focus.request_field = RequestField::Url;
+                return;
+            }
+            _ => BodyField::ModeSelector,
+        };
+    }
+
+    /// Returns the appropriate BodyField for the current body mode's content area
+    fn content_body_field(&self) -> BodyField {
+        match self.request.body_mode {
+            BodyMode::Raw | BodyMode::Json | BodyMode::Xml => BodyField::TextEditor,
+            BodyMode::FormUrlEncoded | BodyMode::Multipart => BodyField::KvRow,
+            BodyMode::Binary => BodyField::BinaryPath,
+        }
     }
 
     fn handle_auth_type_popup(&mut self, key: KeyEvent) {

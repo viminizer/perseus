@@ -1,7 +1,7 @@
 mod layout;
 mod widgets;
 
-use layout::{AppLayout, RequestInputLayout, RequestLayout, ResponseLayout};
+use layout::{AppLayout, BodyLayout, RequestInputLayout, RequestLayout, ResponseLayout};
 use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -13,9 +13,9 @@ use tui_textarea::TextArea;
 use unicode_width::UnicodeWidthChar;
 
 use crate::app::{
-    App, AppMode, AuthField, AuthType, HttpMethod, Method, Panel, RequestField, RequestTab,
-    ResponseBodyRenderCache, ResponseHeadersRenderCache, ResponseStatus, ResponseTab,
-    SidebarPopup, WrapCache,
+    App, AppMode, AuthField, AuthType, BodyField, BodyMode, HttpMethod, Method, Panel,
+    RequestField, RequestTab, ResponseBodyRenderCache, ResponseHeadersRenderCache, ResponseStatus,
+    ResponseTab, SidebarPopup, WrapCache,
 };
 use crate::perf;
 use crate::storage::NodeKind;
@@ -37,6 +37,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     if app.show_method_popup {
         render_method_popup(frame, app, input_layout.method_area);
+    }
+
+    if app.show_body_mode_popup {
+        render_body_mode_popup(frame, app, request_split[1]);
     }
 
     if app.show_auth_type_popup {
@@ -333,6 +337,80 @@ fn render_method_popup(frame: &mut Frame, app: &App, method_area: Rect) {
     frame.render_widget(list, inner);
 }
 
+fn render_body_panel(frame: &mut Frame, app: &App, area: Rect) {
+    let layout = BodyLayout::new(area);
+
+    render_body_mode_selector(frame, app, layout.mode_selector_area);
+
+    match app.request.body_mode {
+        BodyMode::Raw | BodyMode::Json | BodyMode::Xml => {
+            frame.render_widget(&app.request.body_editor, layout.content_area);
+        }
+        _ => {
+            let placeholder = Paragraph::new("(not yet implemented)")
+                .style(Style::default().fg(Color::DarkGray));
+            frame.render_widget(placeholder, layout.content_area);
+        }
+    }
+}
+
+fn render_body_mode_selector(frame: &mut Frame, app: &App, area: Rect) {
+    let body_focused = app.focus.panel == Panel::Request
+        && app.focus.request_field == RequestField::Body;
+    let on_selector = body_focused && app.focus.body_field == BodyField::ModeSelector;
+
+    let mode_text = format!(" Type: [{}]", app.request.body_mode.as_str());
+
+    let style = if on_selector {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let line = Line::from(Span::styled(mode_text, style));
+    frame.render_widget(Paragraph::new(line), area);
+}
+
+fn render_body_mode_popup(frame: &mut Frame, app: &App, area: Rect) {
+    let width: u16 = 22;
+    let height: u16 = BodyMode::ALL.len() as u16 + 2;
+    let x = area.x + 2;
+    let y = area.y + 2;
+    let popup_area = Rect::new(
+        x.min(area.right().saturating_sub(width)),
+        y.min(area.bottom().saturating_sub(height)),
+        width.min(area.width),
+        height.min(area.height),
+    );
+
+    frame.render_widget(Clear, popup_area);
+
+    let popup_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(" Body Type ");
+
+    let inner = popup_block.inner(popup_area);
+    frame.render_widget(popup_block, popup_area);
+
+    let lines: Vec<Line> = BodyMode::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, mode)| {
+            let is_selected = i == app.body_mode_popup_index;
+            let style = if is_selected {
+                Style::default().fg(Color::Black).bg(Color::Cyan)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            Line::from(Span::styled(format!(" {} ", mode.as_str()), style))
+        })
+        .collect();
+
+    let list = Paragraph::new(lines);
+    frame.render_widget(list, inner);
+}
+
 fn render_auth_type_popup(frame: &mut Frame, app: &App, area: Rect) {
     let width: u16 = 20;
     let height: u16 = AuthType::ALL.len() as u16 + 2;
@@ -530,7 +608,7 @@ fn render_request_panel(frame: &mut Frame, app: &App, area: Rect) {
             render_auth_panel(frame, app, layout.content_area);
         }
         RequestTab::Body => {
-            frame.render_widget(&app.request.body_editor, layout.content_area);
+            render_body_panel(frame, app, layout.content_area);
         }
     }
 }
@@ -558,6 +636,15 @@ fn render_request_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
         AuthType::ApiKey => "Auth (API Key)".to_string(),
     };
 
+    let body_label = match app.request.body_mode {
+        BodyMode::Raw => "Body".to_string(),
+        BodyMode::Json => "Body (JSON)".to_string(),
+        BodyMode::Xml => "Body (XML)".to_string(),
+        BodyMode::FormUrlEncoded => "Body (Form)".to_string(),
+        BodyMode::Multipart => "Body (Multipart)".to_string(),
+        BodyMode::Binary => "Body (Binary)".to_string(),
+    };
+
     let tabs_line = Line::from(vec![
         Span::styled(
             "Headers",
@@ -578,7 +665,7 @@ fn render_request_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
         ),
         Span::styled(" | ", inactive_style),
         Span::styled(
-            "Body",
+            body_label,
             if app.request_tab == RequestTab::Body {
                 active_style
             } else {
