@@ -13,8 +13,9 @@ use tui_textarea::TextArea;
 use unicode_width::UnicodeWidthChar;
 
 use crate::app::{
-    App, AppMode, HttpMethod, Method, Panel, RequestField, RequestTab, ResponseBodyRenderCache,
-    ResponseHeadersRenderCache, ResponseStatus, ResponseTab, SidebarPopup, WrapCache,
+    App, AppMode, AuthField, AuthType, HttpMethod, Method, Panel, RequestField, RequestTab,
+    ResponseBodyRenderCache, ResponseHeadersRenderCache, ResponseStatus, ResponseTab,
+    SidebarPopup, WrapCache,
 };
 use crate::perf;
 use crate::storage::NodeKind;
@@ -390,7 +391,7 @@ fn render_request_panel(frame: &mut Frame, app: &App, area: Rect) {
     let request_panel_focused = app.focus.panel == Panel::Request
         && matches!(
             app.focus.request_field,
-            RequestField::Headers | RequestField::Body
+            RequestField::Headers | RequestField::Auth | RequestField::Body
         );
     let border_color = if request_panel_focused {
         Color::Green
@@ -417,6 +418,9 @@ fn render_request_panel(frame: &mut Frame, app: &App, area: Rect) {
         RequestTab::Headers => {
             frame.render_widget(&app.request.headers_editor, layout.content_area);
         }
+        RequestTab::Auth => {
+            render_auth_panel(frame, app, layout.content_area);
+        }
         RequestTab::Body => {
             frame.render_widget(&app.request.body_editor, layout.content_area);
         }
@@ -427,7 +431,7 @@ fn render_request_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
     let request_panel_focused = app.focus.panel == Panel::Request
         && matches!(
             app.focus.request_field,
-            RequestField::Headers | RequestField::Body
+            RequestField::Headers | RequestField::Auth | RequestField::Body
         );
     let active_color = if request_panel_focused {
         Color::Green
@@ -438,10 +442,27 @@ fn render_request_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
         .fg(active_color)
         .add_modifier(Modifier::UNDERLINED);
     let inactive_style = Style::default().fg(Color::DarkGray);
+
+    let auth_label = match app.request.auth_type {
+        AuthType::NoAuth => "Auth".to_string(),
+        AuthType::Bearer => "Auth (Bearer)".to_string(),
+        AuthType::Basic => "Auth (Basic)".to_string(),
+        AuthType::ApiKey => "Auth (API Key)".to_string(),
+    };
+
     let tabs_line = Line::from(vec![
         Span::styled(
             "Headers",
             if app.request_tab == RequestTab::Headers {
+                active_style
+            } else {
+                inactive_style
+            },
+        ),
+        Span::styled(" | ", inactive_style),
+        Span::styled(
+            auth_label,
+            if app.request_tab == RequestTab::Auth {
                 active_style
             } else {
                 inactive_style
@@ -460,6 +481,13 @@ fn render_request_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
 
     let tabs_widget = Paragraph::new(tabs_line);
     frame.render_widget(tabs_widget, area);
+}
+
+fn render_auth_panel(frame: &mut Frame, app: &App, area: Rect) {
+    let msg = Paragraph::new("No authentication configured")
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
+    frame.render_widget(msg, area);
 }
 
 fn render_response_panel(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -1112,6 +1140,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 RequestField::Url => "URL",
                 RequestField::Send => "Send",
                 RequestField::Headers => "Headers",
+                RequestField::Auth => "Auth",
                 RequestField::Body => "Body",
             };
             format!("Request > {}", field)

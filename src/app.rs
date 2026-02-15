@@ -67,11 +67,13 @@ fn response_tab_from_str(value: &str) -> ResponseTab {
 pub enum RequestTab {
     #[default]
     Headers,
+    Auth,
     Body,
 }
 
 fn request_tab_from_str(value: &str) -> RequestTab {
     match value {
+        "Auth" => RequestTab::Auth,
         "Body" => RequestTab::Body,
         _ => RequestTab::Headers,
     }
@@ -80,6 +82,7 @@ fn request_tab_from_str(value: &str) -> RequestTab {
 fn request_tab_to_str(value: RequestTab) -> &'static str {
     match value {
         RequestTab::Headers => "Headers",
+        RequestTab::Auth => "Auth",
         RequestTab::Body => "Body",
     }
 }
@@ -293,6 +296,7 @@ pub enum RequestField {
     Url,
     Send,
     Headers,
+    Auth,
     Body,
 }
 
@@ -545,7 +549,7 @@ impl RequestState {
             RequestField::Url => Some(&mut self.url_editor),
             RequestField::Headers => Some(&mut self.headers_editor),
             RequestField::Body => Some(&mut self.body_editor),
-            RequestField::Method | RequestField::Send => None,
+            RequestField::Method | RequestField::Send | RequestField::Auth => None,
         }
     }
 }
@@ -1803,7 +1807,7 @@ impl App {
                 RequestField::Url | RequestField::Headers | RequestField::Body => {
                     Some(YankTarget::Request)
                 }
-                RequestField::Method | RequestField::Send => None,
+                RequestField::Method | RequestField::Send | RequestField::Auth => None,
             },
             Panel::Sidebar => None,
         }
@@ -2467,6 +2471,9 @@ impl App {
                         RequestField::Url | RequestField::Headers | RequestField::Body => {
                             self.enter_editing(VimMode::Normal);
                         }
+                        RequestField::Auth => {
+                            // Auth sub-field interaction handled in Phase E
+                        }
                     }
                 } else if in_response
                     && matches!(self.response, ResponseStatus::Success(_))
@@ -2808,7 +2815,9 @@ impl App {
                     RequestField::Method => RequestField::Url,
                     RequestField::Url => RequestField::Send,
                     RequestField::Send => RequestField::Method,
-                    RequestField::Headers | RequestField::Body => RequestField::Url,
+                    RequestField::Headers | RequestField::Auth | RequestField::Body => {
+                        RequestField::Url
+                    }
                 };
             }
             Panel::Response => {}
@@ -2825,7 +2834,9 @@ impl App {
                         RequestField::Method => RequestField::Send,
                         RequestField::Url => RequestField::Method,
                         RequestField::Send => RequestField::Url,
-                        RequestField::Headers | RequestField::Body => RequestField::Url,
+                        RequestField::Headers | RequestField::Auth | RequestField::Body => {
+                            RequestField::Url
+                        }
                     };
                 }
             }
@@ -2845,10 +2856,11 @@ impl App {
                     RequestField::Method | RequestField::Url | RequestField::Send => {
                         match self.request_tab {
                             RequestTab::Headers => RequestField::Headers,
+                            RequestTab::Auth => RequestField::Auth,
                             RequestTab::Body => RequestField::Body,
                         }
                     }
-                    RequestField::Headers | RequestField::Body => {
+                    RequestField::Headers | RequestField::Auth | RequestField::Body => {
                         self.focus.panel = Panel::Response;
                         return;
                     }
@@ -2864,6 +2876,7 @@ impl App {
                 self.focus.panel = Panel::Request;
                 self.focus.request_field = match self.request_tab {
                     RequestTab::Headers => RequestField::Headers,
+                    RequestTab::Auth => RequestField::Auth,
                     RequestTab::Body => RequestField::Body,
                 };
             }
@@ -2872,10 +2885,13 @@ impl App {
                     RequestField::Method | RequestField::Url | RequestField::Send => {
                         match self.request_tab {
                             RequestTab::Headers => RequestField::Headers,
+                            RequestTab::Auth => RequestField::Auth,
                             RequestTab::Body => RequestField::Body,
                         }
                     }
-                    RequestField::Headers | RequestField::Body => RequestField::Url,
+                    RequestField::Headers | RequestField::Auth | RequestField::Body => {
+                        RequestField::Url
+                    }
                 };
             }
             Panel::Sidebar => {}
@@ -2884,23 +2900,35 @@ impl App {
 
     fn next_request_tab(&mut self) {
         self.request_tab = match self.request_tab {
-            RequestTab::Headers => RequestTab::Body,
+            RequestTab::Headers => RequestTab::Auth,
+            RequestTab::Auth => RequestTab::Body,
             RequestTab::Body => RequestTab::Headers,
         };
-
-        if self.focus.panel == Panel::Request {
-            self.focus.request_field = match self.focus.request_field {
-                RequestField::Headers | RequestField::Body => match self.request_tab {
-                    RequestTab::Headers => RequestField::Headers,
-                    RequestTab::Body => RequestField::Body,
-                },
-                other => other,
-            };
-        }
+        self.sync_field_to_tab();
     }
 
     fn prev_request_tab(&mut self) {
-        self.next_request_tab();
+        self.request_tab = match self.request_tab {
+            RequestTab::Headers => RequestTab::Body,
+            RequestTab::Auth => RequestTab::Headers,
+            RequestTab::Body => RequestTab::Auth,
+        };
+        self.sync_field_to_tab();
+    }
+
+    fn sync_field_to_tab(&mut self) {
+        if self.focus.panel == Panel::Request {
+            self.focus.request_field = match self.focus.request_field {
+                RequestField::Headers | RequestField::Auth | RequestField::Body => {
+                    match self.request_tab {
+                        RequestTab::Headers => RequestField::Headers,
+                        RequestTab::Auth => RequestField::Auth,
+                        RequestTab::Body => RequestField::Body,
+                    }
+                }
+                other => other,
+            };
+        }
     }
 
     fn next_response_tab(&mut self) {
