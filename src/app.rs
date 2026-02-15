@@ -544,6 +544,24 @@ impl RequestState {
         self.auth_key_value_editor.lines().join("")
     }
 
+    pub fn build_auth_config(&self) -> http::AuthConfig {
+        match self.auth_type {
+            AuthType::NoAuth => http::AuthConfig::NoAuth,
+            AuthType::Bearer => http::AuthConfig::Bearer {
+                token: self.auth_token_text(),
+            },
+            AuthType::Basic => http::AuthConfig::Basic {
+                username: self.auth_username_text(),
+                password: self.auth_password_text(),
+            },
+            AuthType::ApiKey => http::AuthConfig::ApiKey {
+                key: self.auth_key_name_text(),
+                value: self.auth_key_value_text(),
+                location: self.api_key_location,
+            },
+        }
+    }
+
     pub fn active_editor(&mut self, field: RequestField) -> Option<&mut TextArea<'static>> {
         match field {
             RequestField::Url => Some(&mut self.url_editor),
@@ -1256,28 +1274,98 @@ impl App {
         } else {
             Some(body_raw)
         };
-        PostmanRequest::new(method, url, headers, body)
+        let auth = match self.request.auth_type {
+            AuthType::NoAuth => None,
+            AuthType::Bearer => {
+                Some(storage::PostmanAuth::bearer(&self.request.auth_token_text()))
+            }
+            AuthType::Basic => Some(storage::PostmanAuth::basic(
+                &self.request.auth_username_text(),
+                &self.request.auth_password_text(),
+            )),
+            AuthType::ApiKey => Some(storage::PostmanAuth::apikey(
+                &self.request.auth_key_name_text(),
+                &self.request.auth_key_value_text(),
+                if self.request.api_key_location == ApiKeyLocation::Header {
+                    "header"
+                } else {
+                    "query"
+                },
+            )),
+        };
+        let mut req = PostmanRequest::new(method, url, headers, body);
+        req.auth = auth;
+        req
     }
 
     fn open_request(&mut self, request_id: Uuid) {
         self.save_current_request_if_dirty();
-        if let Some(item) = self.collection.get_item(request_id) {
-            if let Some(request) = &item.request {
-                let method = Method::from_str(&request.method);
-                let url = extract_url(&request.url);
-                let headers = headers_to_text(&request.header);
-                let body = request
-                    .body
-                    .as_ref()
-                    .and_then(|b| b.raw.clone())
-                    .unwrap_or_default();
-                self.request.set_contents(method, url, headers, body);
-                self.apply_editor_tab_size();
-                self.current_request_id = Some(request_id);
-                self.request_dirty = false;
-                self.focus.panel = Panel::Request;
-                self.focus.request_field = RequestField::Url;
+        let request_data = self
+            .collection
+            .get_item(request_id)
+            .and_then(|item| item.request.clone());
+        if let Some(request) = request_data {
+            let method = Method::from_str(&request.method);
+            let url = extract_url(&request.url);
+            let headers = headers_to_text(&request.header);
+            let body = request
+                .body
+                .as_ref()
+                .and_then(|b| b.raw.clone())
+                .unwrap_or_default();
+            self.request.set_contents(method, url, headers, body);
+            self.load_auth_from_postman(&request);
+            self.apply_editor_tab_size();
+            self.current_request_id = Some(request_id);
+            self.request_dirty = false;
+            self.focus.panel = Panel::Request;
+            self.focus.request_field = RequestField::Url;
+        }
+    }
+
+    fn load_auth_from_postman(&mut self, request: &PostmanRequest) {
+        if let Some(auth) = &request.auth {
+            match auth.auth_type.as_str() {
+                "bearer" => {
+                    self.request.auth_type = AuthType::Bearer;
+                    if let Some(token) = auth.get_bearer_token() {
+                        self.request.auth_token_editor =
+                            TextArea::new(vec![token.to_string()]);
+                        configure_editor(&mut self.request.auth_token_editor, "Token");
+                    }
+                }
+                "basic" => {
+                    self.request.auth_type = AuthType::Basic;
+                    if let Some((username, password)) = auth.get_basic_credentials() {
+                        self.request.auth_username_editor =
+                            TextArea::new(vec![username.to_string()]);
+                        configure_editor(&mut self.request.auth_username_editor, "Username");
+                        self.request.auth_password_editor =
+                            TextArea::new(vec![password.to_string()]);
+                        configure_editor(&mut self.request.auth_password_editor, "Password");
+                    }
+                }
+                "apikey" => {
+                    self.request.auth_type = AuthType::ApiKey;
+                    if let Some((key, value, location)) = auth.get_apikey() {
+                        self.request.auth_key_name_editor =
+                            TextArea::new(vec![key.to_string()]);
+                        configure_editor(&mut self.request.auth_key_name_editor, "Key name");
+                        self.request.auth_key_value_editor =
+                            TextArea::new(vec![value.to_string()]);
+                        configure_editor(&mut self.request.auth_key_value_editor, "Key value");
+                        self.request.api_key_location = match location {
+                            "query" => ApiKeyLocation::QueryParam,
+                            _ => ApiKeyLocation::Header,
+                        };
+                    }
+                }
+                _ => {
+                    self.request.auth_type = AuthType::NoAuth;
+                }
             }
+        } else {
+            self.request.auth_type = AuthType::NoAuth;
         }
     }
 
@@ -2863,9 +2951,11 @@ impl App {
         let method = self.request.method.clone();
         let headers = self.request.headers_text();
         let body = self.request.body_text();
+        let auth = self.request.build_auth_config();
 
         let handle = tokio::spawn(async move {
-            let result = http::send_request(&client, &method, &url, &headers, &body).await;
+            let result =
+                http::send_request(&client, &method, &url, &headers, &body, &auth).await;
             let _ = tx.send(result).await;
         });
         self.request_handle = Some(handle.abort_handle());
