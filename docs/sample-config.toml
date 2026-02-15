@@ -1,0 +1,47 @@
+# Perseus configuration file
+#
+# Place this file at:
+#   Global:  $XDG_CONFIG_HOME/perseus/config.toml  (default: ~/.config/perseus/config.toml)
+#   Project: .perseus/config.toml  (in your project root)
+#
+# Project config overrides global config on a per-field basis.
+# Missing files are silently skipped — all values have sensible defaults.
+# Unknown keys are ignored for forward compatibility.
+
+[http]
+# Request timeout in seconds. 0 = no timeout. Range: 0..=600
+# timeout = 30
+
+# Whether to follow HTTP redirects.
+# follow_redirects = true
+
+# Maximum number of redirects to follow. Range: 0..=100
+# max_redirects = 10
+
+[proxy]
+# HTTP/HTTPS proxy URL. Must be a valid URL if set.
+# url = "http://proxy.corp:8080"
+
+# Comma-separated list of hostnames that bypass the proxy.
+# no_proxy = "localhost,127.0.0.1,.internal"
+
+[ssl]
+# Whether to verify SSL/TLS certificates. Set to false to skip verification.
+# WARNING: Disabling verification is insecure. Use only for development.
+# verify = true
+
+# Path to a custom CA certificate (PEM format). Tilde (~) is expanded.
+# ca_cert = "~/certs/ca.pem"
+
+# Client certificate and key for mutual TLS (both required together, PEM format).
+# client_cert = "~/certs/client.pem"
+# client_key = "~/certs/client-key.pem"
+
+[ui]
+# Default sidebar width in characters. Range: 28..=60
+# Session-persisted width overrides this value.
+# sidebar_width = 32
+
+[editor]
+# Tab size in spaces for request body editor. Range: 1..=8
+# tab_size = 2

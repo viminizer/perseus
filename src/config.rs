@@ -1,6 +1,6 @@
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -10,7 +10,7 @@ use crate::storage::find_project_root;
 // Top-level Config — all fields have defaults, unknown keys silently ignored.
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub http: HttpConfig,
@@ -29,7 +29,7 @@ pub struct HttpConfig {
     pub max_redirects: u32,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct ProxyConfig {
     pub url: Option<String>,
@@ -61,33 +61,12 @@ pub struct EditorConfig {
 // Defaults
 // ---------------------------------------------------------------------------
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            http: HttpConfig::default(),
-            proxy: ProxyConfig::default(),
-            ssl: SslConfig::default(),
-            ui: UiConfig::default(),
-            editor: EditorConfig::default(),
-        }
-    }
-}
-
 impl Default for HttpConfig {
     fn default() -> Self {
         Self {
             timeout: 30,
             follow_redirects: true,
             max_redirects: 10,
-        }
-    }
-}
-
-impl Default for ProxyConfig {
-    fn default() -> Self {
-        Self {
-            url: None,
-            no_proxy: None,
         }
     }
 }
@@ -244,7 +223,7 @@ fn project_config_path() -> Option<PathBuf> {
 // Tilde expansion
 // ---------------------------------------------------------------------------
 
-fn expand_tilde(path: &PathBuf) -> PathBuf {
+fn expand_tilde(path: &Path) -> PathBuf {
     if let Some(s) = path.to_str() {
         if let Some(rest) = s.strip_prefix('~') {
             if let Ok(home) = env::var("HOME") {
@@ -252,7 +231,7 @@ fn expand_tilde(path: &PathBuf) -> PathBuf {
             }
         }
     }
-    path.clone()
+    path.to_path_buf()
 }
 
 // ---------------------------------------------------------------------------
@@ -375,7 +354,7 @@ impl Config {
 // Loading
 // ---------------------------------------------------------------------------
 
-fn load_overlay(path: &PathBuf) -> Result<OverlayConfig, String> {
+fn load_overlay(path: &Path) -> Result<OverlayConfig, String> {
     let content = fs::read_to_string(path).map_err(|e| {
         format!(
             "config error: could not read \"{}\": {}",
