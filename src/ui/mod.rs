@@ -484,10 +484,154 @@ fn render_request_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_auth_panel(frame: &mut Frame, app: &App, area: Rect) {
-    let msg = Paragraph::new("No authentication configured")
-        .style(Style::default().fg(Color::DarkGray))
-        .alignment(Alignment::Center);
-    frame.render_widget(msg, area);
+    use crate::app::ApiKeyLocation;
+
+    let auth_focused = app.focus.panel == Panel::Request
+        && app.focus.request_field == RequestField::Auth;
+
+    // Layout: type selector row (1) + separator (1) + content (fill)
+    let chunks = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(0),
+    ])
+    .split(area);
+
+    // Row 1: Auth type selector
+    let type_label = format!("Type: [{}]", app.request.auth_type.as_str());
+    let type_focused = auth_focused && app.focus.auth_field == AuthField::AuthType;
+    let type_style = if type_focused {
+        Style::default().fg(Color::Green)
+    } else {
+        Style::default().fg(Color::White)
+    };
+    frame.render_widget(Paragraph::new(type_label).style(type_style), chunks[0]);
+
+    // Separator
+    let sep_style = Style::default().fg(Color::DarkGray);
+    let sep_line = "─".repeat(area.width as usize);
+    frame.render_widget(Paragraph::new(sep_line).style(sep_style), chunks[1]);
+
+    // Content area — per auth type
+    let content_area = chunks[2];
+    match app.request.auth_type {
+        AuthType::NoAuth => {
+            let msg = Paragraph::new("No authentication configured")
+                .style(Style::default().fg(Color::DarkGray))
+                .alignment(Alignment::Center);
+            frame.render_widget(msg, content_area);
+        }
+        AuthType::Bearer => {
+            let field_chunks = Layout::vertical([
+                Constraint::Length(1), // label
+                Constraint::Min(0),   // textarea
+            ])
+            .split(content_area);
+
+            let label_focused =
+                auth_focused && app.focus.auth_field == AuthField::Token;
+            let label_style = if label_focused {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default().fg(Color::Cyan)
+            };
+            frame.render_widget(
+                Paragraph::new("Token:").style(label_style),
+                field_chunks[0],
+            );
+            frame.render_widget(&app.request.auth_token_editor, field_chunks[1]);
+        }
+        AuthType::Basic => {
+            let field_chunks = Layout::vertical([
+                Constraint::Length(1), // username label
+                Constraint::Length(3), // username textarea
+                Constraint::Length(1), // password label
+                Constraint::Min(0),   // password textarea
+            ])
+            .split(content_area);
+
+            let username_focused =
+                auth_focused && app.focus.auth_field == AuthField::Username;
+            let password_focused =
+                auth_focused && app.focus.auth_field == AuthField::Password;
+
+            let u_style = if username_focused {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default().fg(Color::Cyan)
+            };
+            frame.render_widget(
+                Paragraph::new("Username:").style(u_style),
+                field_chunks[0],
+            );
+            frame.render_widget(&app.request.auth_username_editor, field_chunks[1]);
+
+            let p_style = if password_focused {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default().fg(Color::Cyan)
+            };
+            frame.render_widget(
+                Paragraph::new("Password:").style(p_style),
+                field_chunks[2],
+            );
+            frame.render_widget(&app.request.auth_password_editor, field_chunks[3]);
+        }
+        AuthType::ApiKey => {
+            let field_chunks = Layout::vertical([
+                Constraint::Length(1), // key name label
+                Constraint::Length(2), // key name textarea
+                Constraint::Length(1), // key value label
+                Constraint::Length(2), // key value textarea
+                Constraint::Length(1), // location toggle
+                Constraint::Min(0),   // spacer
+            ])
+            .split(content_area);
+
+            let kn_focused =
+                auth_focused && app.focus.auth_field == AuthField::KeyName;
+            let kv_focused =
+                auth_focused && app.focus.auth_field == AuthField::KeyValue;
+            let loc_focused =
+                auth_focused && app.focus.auth_field == AuthField::KeyLocation;
+
+            let kn_style = if kn_focused {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default().fg(Color::Cyan)
+            };
+            frame.render_widget(
+                Paragraph::new("Key:").style(kn_style),
+                field_chunks[0],
+            );
+            frame.render_widget(&app.request.auth_key_name_editor, field_chunks[1]);
+
+            let kv_style = if kv_focused {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default().fg(Color::Cyan)
+            };
+            frame.render_widget(
+                Paragraph::new("Value:").style(kv_style),
+                field_chunks[2],
+            );
+            frame.render_widget(&app.request.auth_key_value_editor, field_chunks[3]);
+
+            let loc_label = match app.request.api_key_location {
+                ApiKeyLocation::Header => "Add to: [Header]",
+                ApiKeyLocation::QueryParam => "Add to: [Query Param]",
+            };
+            let loc_style = if loc_focused {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            frame.render_widget(
+                Paragraph::new(loc_label).style(loc_style),
+                field_chunks[4],
+            );
+        }
+    }
 }
 
 fn render_response_panel(frame: &mut Frame, app: &mut App, area: Rect) {

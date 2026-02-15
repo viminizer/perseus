@@ -865,6 +865,11 @@ impl App {
         self.request.url_editor.set_tab_length(tab);
         self.request.headers_editor.set_tab_length(tab);
         self.request.body_editor.set_tab_length(tab);
+        self.request.auth_token_editor.set_tab_length(tab);
+        self.request.auth_username_editor.set_tab_length(tab);
+        self.request.auth_password_editor.set_tab_length(tab);
+        self.request.auth_key_name_editor.set_tab_length(tab);
+        self.request.auth_key_value_editor.set_tab_length(tab);
     }
 
     fn build_client(config: &Config) -> Result<Client> {
@@ -2087,6 +2092,9 @@ impl App {
         };
         self.request.body_editor.set_cursor_style(cursor_style);
 
+        // Auth editors — prepare only the ones relevant to current auth type
+        self.prepare_auth_editors();
+
         // Response editor block/cursor
         let response_editing = is_editing && self.focus.panel == Panel::Response;
         self.response_editor.set_block(Block::default().borders(Borders::NONE));
@@ -2100,6 +2108,45 @@ impl App {
         self.response_editor.set_cursor_style(response_cursor);
         self.response_headers_editor
             .set_cursor_style(response_cursor);
+    }
+
+    fn prepare_auth_editors(&mut self) {
+        let is_editing = self.app_mode == AppMode::Editing;
+        let in_auth = self.focus.panel == Panel::Request
+            && self.focus.request_field == RequestField::Auth;
+        let auth_field = self.focus.auth_field;
+        let hidden_cursor = Style::default().fg(Color::DarkGray);
+        let vim_style = self.vim_cursor_style();
+
+        let cursor_for = |field: AuthField| -> Style {
+            if is_editing && in_auth && auth_field == field {
+                vim_style
+            } else {
+                hidden_cursor
+            }
+        };
+
+        let auth_block = Block::default().borders(Borders::NONE);
+
+        match self.request.auth_type {
+            AuthType::Bearer => {
+                self.request.auth_token_editor.set_block(auth_block);
+                self.request.auth_token_editor.set_cursor_style(cursor_for(AuthField::Token));
+            }
+            AuthType::Basic => {
+                self.request.auth_username_editor.set_block(auth_block.clone());
+                self.request.auth_username_editor.set_cursor_style(cursor_for(AuthField::Username));
+                self.request.auth_password_editor.set_block(auth_block);
+                self.request.auth_password_editor.set_cursor_style(cursor_for(AuthField::Password));
+            }
+            AuthType::ApiKey => {
+                self.request.auth_key_name_editor.set_block(auth_block.clone());
+                self.request.auth_key_name_editor.set_cursor_style(cursor_for(AuthField::KeyName));
+                self.request.auth_key_value_editor.set_block(auth_block);
+                self.request.auth_key_value_editor.set_cursor_style(cursor_for(AuthField::KeyValue));
+            }
+            AuthType::NoAuth => {}
+        }
     }
 
     fn vim_cursor_style(&self) -> Style {
