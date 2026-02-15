@@ -625,6 +625,13 @@ impl RequestState {
         self.body_editor = TextArea::new(body_lines);
         configure_editor(&mut self.body_editor, "Request body...");
 
+        // Reset body mode fields
+        self.body_mode = BodyMode::Raw;
+        self.body_form_pairs = vec![KvPair::new_empty()];
+        self.body_multipart_fields = vec![MultipartField::new_empty()];
+        self.body_binary_path_editor = TextArea::default();
+        configure_editor(&mut self.body_binary_path_editor, "File path...");
+
         self.reset_auth();
     }
 
@@ -1635,9 +1642,11 @@ impl App {
             self.apply_editor_tab_size();
             self.current_request_id = Some(request_id);
             self.request_dirty = false;
+            self.kv_edit_textarea = None;
             self.focus.panel = Panel::Request;
             self.focus.request_field = RequestField::Url;
             self.focus.body_field = BodyField::ModeSelector;
+            self.focus.kv_focus = KvFocus::default();
         }
     }
 
@@ -3859,9 +3868,13 @@ impl App {
             KeyCode::Enter => {
                 self.request.body_mode = BodyMode::from_index(self.body_mode_popup_index);
                 self.show_body_mode_popup = false;
+                self.kv_edit_textarea = None;
                 self.request_dirty = true;
                 // Move focus to the appropriate content field
                 self.focus.body_field = self.content_body_field();
+                if self.focus.body_field == BodyField::KvRow {
+                    self.focus.kv_focus = KvFocus::default();
+                }
             }
             KeyCode::Esc => {
                 self.show_body_mode_popup = false;
