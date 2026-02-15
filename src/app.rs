@@ -2621,6 +2621,16 @@ impl App {
             .body_binary_path_editor
             .set_cursor_style(cursor_style);
 
+        // KV cell edit textarea — update cursor style when active
+        let kv_cursor_style = if is_editing && body_focused && self.focus.body_field == BodyField::KvRow {
+            self.vim_cursor_style()
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        if let Some(ref mut kv_textarea) = self.kv_edit_textarea {
+            kv_textarea.set_cursor_style(kv_cursor_style);
+        }
+
         // Auth editors — prepare only the ones relevant to current auth type
         self.prepare_auth_editors();
 
@@ -3066,18 +3076,58 @@ impl App {
             }
         }
 
-        // Body sub-field navigation: j/k navigates within body fields when focused
+        // Body sub-field navigation
         if in_request && self.focus.request_field == RequestField::Body {
-            match key.code {
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.next_body_field();
-                    return;
+            // KV-specific keys when on a KV row
+            if self.focus.body_field == BodyField::KvRow {
+                match key.code {
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        self.next_body_field();
+                        return;
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.prev_body_field();
+                        return;
+                    }
+                    KeyCode::Tab | KeyCode::Char('l') | KeyCode::Right => {
+                        self.kv_next_column();
+                        return;
+                    }
+                    KeyCode::BackTab | KeyCode::Char('h') | KeyCode::Left => {
+                        self.kv_prev_column();
+                        return;
+                    }
+                    KeyCode::Char('a') | KeyCode::Char('o') => {
+                        self.kv_add_row();
+                        return;
+                    }
+                    KeyCode::Char('d') => {
+                        self.kv_delete_row();
+                        return;
+                    }
+                    KeyCode::Char(' ') => {
+                        self.kv_toggle_enabled();
+                        return;
+                    }
+                    KeyCode::Char('t') => {
+                        self.kv_toggle_multipart_type();
+                        return;
+                    }
+                    _ => {}
                 }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.prev_body_field();
-                    return;
+            } else {
+                // Non-KV body fields: j/k navigation
+                match key.code {
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        self.next_body_field();
+                        return;
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.prev_body_field();
+                        return;
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
 
@@ -3385,6 +3435,9 @@ impl App {
                     vim.transition_read_only(input, &mut self.response_headers_editor, false)
                 }
             }
+        } else if let Some(textarea) = self.kv_edit_textarea.as_mut() {
+            // KV cell editing — route vim input to the temporary textarea
+            self.vim.transition(input, textarea, true)
         } else {
             let field = self.focus.request_field;
             let single_line = field == RequestField::Url
@@ -3399,6 +3452,7 @@ impl App {
 
         match transition {
             Transition::ExitField => {
+                self.commit_kv_cell_edit();
                 self.exit_editing();
             }
             Transition::Mode(new_mode) => {
@@ -3416,6 +3470,9 @@ impl App {
                         ),
                     };
                     self.vim = new_vim;
+                } else if let Some(textarea) = self.kv_edit_textarea.as_mut() {
+                    self.vim = std::mem::replace(&mut self.vim, Vim::new(VimMode::Normal))
+                        .apply_transition(Transition::Mode(new_mode), textarea);
                 } else {
                     let textarea = self
                         .request
@@ -3442,6 +3499,9 @@ impl App {
                         ),
                     };
                     self.vim = new_vim;
+                } else if let Some(textarea) = self.kv_edit_textarea.as_mut() {
+                    self.vim = std::mem::replace(&mut self.vim, Vim::new(VimMode::Normal))
+                        .apply_transition(Transition::Pending(pending_input), textarea);
                 } else {
                     let textarea = self
                         .request
@@ -3827,31 +3887,50 @@ impl App {
                 }
             }
             BodyField::KvRow => {
-                // KV cell editing will be handled in Phase E
+                self.start_kv_cell_edit();
             }
         }
     }
 
     fn next_body_field(&mut self) {
-        self.focus.body_field = match self.focus.body_field {
-            BodyField::ModeSelector => self.content_body_field(),
-            _ => {
-                // From content area, go to response (next_vertical handles this)
-                self.focus.panel = Panel::Response;
-                return;
+        match self.focus.body_field {
+            BodyField::ModeSelector => {
+                self.focus.body_field = self.content_body_field();
+                if self.focus.body_field == BodyField::KvRow {
+                    self.focus.kv_focus.row = 0;
+                    self.focus.kv_focus.column = KvColumn::Key;
+                }
             }
-        };
+            BodyField::KvRow => {
+                let row_count = self.kv_row_count();
+                if self.focus.kv_focus.row + 1 < row_count {
+                    self.focus.kv_focus.row += 1;
+                } else {
+                    self.focus.panel = Panel::Response;
+                }
+            }
+            _ => {
+                self.focus.panel = Panel::Response;
+            }
+        }
     }
 
     fn prev_body_field(&mut self) {
-        self.focus.body_field = match self.focus.body_field {
+        match self.focus.body_field {
             BodyField::ModeSelector => {
-                // Go up to URL row
                 self.focus.request_field = RequestField::Url;
-                return;
             }
-            _ => BodyField::ModeSelector,
-        };
+            BodyField::KvRow => {
+                if self.focus.kv_focus.row > 0 {
+                    self.focus.kv_focus.row -= 1;
+                } else {
+                    self.focus.body_field = BodyField::ModeSelector;
+                }
+            }
+            _ => {
+                self.focus.body_field = BodyField::ModeSelector;
+            }
+        }
     }
 
     /// Returns the appropriate BodyField for the current body mode's content area
@@ -3861,6 +3940,216 @@ impl App {
             BodyMode::FormUrlEncoded | BodyMode::Multipart => BodyField::KvRow,
             BodyMode::Binary => BodyField::BinaryPath,
         }
+    }
+
+    fn kv_row_count(&self) -> usize {
+        match self.request.body_mode {
+            BodyMode::FormUrlEncoded => self.request.body_form_pairs.len(),
+            BodyMode::Multipart => self.request.body_multipart_fields.len(),
+            _ => 0,
+        }
+    }
+
+    fn start_kv_cell_edit(&mut self) {
+        let text = self.get_kv_cell_text();
+        let mut textarea = TextArea::new(vec![text]);
+        configure_editor(&mut textarea, "");
+        textarea.set_block(ratatui::widgets::Block::default().borders(ratatui::widgets::Borders::NONE));
+        textarea.set_cursor_style(self.vim_cursor_style());
+        self.kv_edit_textarea = Some(textarea);
+        self.enter_editing(VimMode::Insert);
+    }
+
+    fn get_kv_cell_text(&self) -> String {
+        let row = self.focus.kv_focus.row;
+        let col = self.focus.kv_focus.column;
+        match self.request.body_mode {
+            BodyMode::FormUrlEncoded => {
+                if let Some(pair) = self.request.body_form_pairs.get(row) {
+                    match col {
+                        KvColumn::Key => pair.key.clone(),
+                        KvColumn::Value => pair.value.clone(),
+                    }
+                } else {
+                    String::new()
+                }
+            }
+            BodyMode::Multipart => {
+                if let Some(field) = self.request.body_multipart_fields.get(row) {
+                    match col {
+                        KvColumn::Key => field.key.clone(),
+                        KvColumn::Value => field.value.clone(),
+                    }
+                } else {
+                    String::new()
+                }
+            }
+            _ => String::new(),
+        }
+    }
+
+    fn commit_kv_cell_edit(&mut self) {
+        if let Some(textarea) = self.kv_edit_textarea.take() {
+            let text = textarea.lines().join("");
+            let row = self.focus.kv_focus.row;
+            let col = self.focus.kv_focus.column;
+            match self.request.body_mode {
+                BodyMode::FormUrlEncoded => {
+                    if let Some(pair) = self.request.body_form_pairs.get_mut(row) {
+                        match col {
+                            KvColumn::Key => pair.key = text,
+                            KvColumn::Value => pair.value = text,
+                        }
+                    }
+                    self.ensure_trailing_empty_kv_pair();
+                }
+                BodyMode::Multipart => {
+                    if let Some(field) = self.request.body_multipart_fields.get_mut(row) {
+                        match col {
+                            KvColumn::Key => field.key = text,
+                            KvColumn::Value => field.value = text,
+                        }
+                    }
+                    self.ensure_trailing_empty_multipart_field();
+                }
+                _ => {}
+            }
+            self.request_dirty = true;
+        }
+    }
+
+    fn ensure_trailing_empty_kv_pair(&mut self) {
+        let needs_new = self
+            .request
+            .body_form_pairs
+            .last()
+            .map(|p| !p.key.is_empty() || !p.value.is_empty())
+            .unwrap_or(true);
+        if needs_new {
+            self.request.body_form_pairs.push(KvPair::new_empty());
+        }
+    }
+
+    fn ensure_trailing_empty_multipart_field(&mut self) {
+        let needs_new = self
+            .request
+            .body_multipart_fields
+            .last()
+            .map(|f| !f.key.is_empty())
+            .unwrap_or(true);
+        if needs_new {
+            self.request
+                .body_multipart_fields
+                .push(MultipartField::new_empty());
+        }
+    }
+
+    fn kv_add_row(&mut self) {
+        let row = self.focus.kv_focus.row;
+        match self.request.body_mode {
+            BodyMode::FormUrlEncoded => {
+                self.request
+                    .body_form_pairs
+                    .insert(row + 1, KvPair::new_empty());
+                self.focus.kv_focus.row = row + 1;
+                self.focus.kv_focus.column = KvColumn::Key;
+            }
+            BodyMode::Multipart => {
+                self.request
+                    .body_multipart_fields
+                    .insert(row + 1, MultipartField::new_empty());
+                self.focus.kv_focus.row = row + 1;
+                self.focus.kv_focus.column = KvColumn::Key;
+            }
+            _ => {}
+        }
+        self.request_dirty = true;
+    }
+
+    fn kv_delete_row(&mut self) {
+        let row = self.focus.kv_focus.row;
+        match self.request.body_mode {
+            BodyMode::FormUrlEncoded => {
+                if self.request.body_form_pairs.len() > 1 {
+                    self.request.body_form_pairs.remove(row);
+                    if self.focus.kv_focus.row >= self.request.body_form_pairs.len() {
+                        self.focus.kv_focus.row =
+                            self.request.body_form_pairs.len().saturating_sub(1);
+                    }
+                }
+            }
+            BodyMode::Multipart => {
+                if self.request.body_multipart_fields.len() > 1 {
+                    self.request.body_multipart_fields.remove(row);
+                    if self.focus.kv_focus.row >= self.request.body_multipart_fields.len() {
+                        self.focus.kv_focus.row =
+                            self.request.body_multipart_fields.len().saturating_sub(1);
+                    }
+                }
+            }
+            _ => {}
+        }
+        self.request_dirty = true;
+    }
+
+    fn kv_toggle_enabled(&mut self) {
+        let row = self.focus.kv_focus.row;
+        match self.request.body_mode {
+            BodyMode::FormUrlEncoded => {
+                if let Some(pair) = self.request.body_form_pairs.get_mut(row) {
+                    pair.enabled = !pair.enabled;
+                }
+            }
+            BodyMode::Multipart => {
+                if let Some(field) = self.request.body_multipart_fields.get_mut(row) {
+                    field.enabled = !field.enabled;
+                }
+            }
+            _ => {}
+        }
+        self.request_dirty = true;
+    }
+
+    fn kv_toggle_multipart_type(&mut self) {
+        if self.request.body_mode != BodyMode::Multipart {
+            return;
+        }
+        let row = self.focus.kv_focus.row;
+        if let Some(field) = self.request.body_multipart_fields.get_mut(row) {
+            field.field_type = match field.field_type {
+                MultipartFieldType::Text => MultipartFieldType::File,
+                MultipartFieldType::File => MultipartFieldType::Text,
+            };
+            self.request_dirty = true;
+        }
+    }
+
+    fn kv_next_column(&mut self) {
+        self.focus.kv_focus.column = match self.focus.kv_focus.column {
+            KvColumn::Key => KvColumn::Value,
+            KvColumn::Value => {
+                // Wrap to next row's key
+                let row_count = self.kv_row_count();
+                if self.focus.kv_focus.row + 1 < row_count {
+                    self.focus.kv_focus.row += 1;
+                }
+                KvColumn::Key
+            }
+        };
+    }
+
+    fn kv_prev_column(&mut self) {
+        self.focus.kv_focus.column = match self.focus.kv_focus.column {
+            KvColumn::Value => KvColumn::Key,
+            KvColumn::Key => {
+                if self.focus.kv_focus.row > 0 {
+                    self.focus.kv_focus.row -= 1;
+                    KvColumn::Value
+                } else {
+                    KvColumn::Key
+                }
+            }
+        };
     }
 
     fn handle_auth_type_popup(&mut self, key: KeyEvent) {

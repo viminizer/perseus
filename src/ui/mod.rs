@@ -13,9 +13,10 @@ use tui_textarea::TextArea;
 use unicode_width::UnicodeWidthChar;
 
 use crate::app::{
-    App, AppMode, AuthField, AuthType, BodyField, BodyMode, HttpMethod, Method, Panel,
-    RequestField, RequestTab, ResponseBodyRenderCache, ResponseHeadersRenderCache, ResponseStatus,
-    ResponseTab, SidebarPopup, WrapCache,
+    App, AppMode, AuthField, AuthType, BodyField, BodyMode, HttpMethod, KvColumn, KvFocus, KvPair,
+    Method, MultipartField, MultipartFieldType, Panel, RequestField, RequestTab,
+    ResponseBodyRenderCache, ResponseHeadersRenderCache, ResponseStatus, ResponseTab,
+    SidebarPopup, WrapCache,
 };
 use crate::perf;
 use crate::storage::NodeKind;
@@ -342,16 +343,290 @@ fn render_body_panel(frame: &mut Frame, app: &App, area: Rect) {
 
     render_body_mode_selector(frame, app, layout.mode_selector_area);
 
+    let body_focused = app.focus.panel == Panel::Request
+        && app.focus.request_field == RequestField::Body;
+
     match app.request.body_mode {
         BodyMode::Raw | BodyMode::Json | BodyMode::Xml => {
             frame.render_widget(&app.request.body_editor, layout.content_area);
         }
-        _ => {
-            let placeholder = Paragraph::new("(not yet implemented)")
-                .style(Style::default().fg(Color::DarkGray));
-            frame.render_widget(placeholder, layout.content_area);
+        BodyMode::FormUrlEncoded => {
+            render_kv_table(
+                frame,
+                &app.request.body_form_pairs,
+                &app.request.body_multipart_fields,
+                false,
+                app.focus.kv_focus,
+                body_focused && app.focus.body_field == BodyField::KvRow,
+                app.app_mode == AppMode::Editing,
+                &app.kv_edit_textarea,
+                layout.content_area,
+            );
+        }
+        BodyMode::Multipart => {
+            render_kv_table(
+                frame,
+                &app.request.body_form_pairs,
+                &app.request.body_multipart_fields,
+                true,
+                app.focus.kv_focus,
+                body_focused && app.focus.body_field == BodyField::KvRow,
+                app.app_mode == AppMode::Editing,
+                &app.kv_edit_textarea,
+                layout.content_area,
+            );
+        }
+        BodyMode::Binary => {
+            render_binary_panel(frame, app, layout.content_area);
         }
     }
+}
+
+fn render_binary_panel(frame: &mut Frame, app: &App, area: Rect) {
+    let chunks = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(3),
+        Constraint::Min(0),
+    ])
+    .split(area);
+
+    let label = Paragraph::new(" File:")
+        .style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(label, chunks[0]);
+    frame.render_widget(&app.request.body_binary_path_editor, chunks[1]);
+
+    let path_text = app.request.body_binary_path_text();
+    let info = if path_text.trim().is_empty() {
+        " No file selected".to_string()
+    } else {
+        match std::fs::metadata(&path_text) {
+            Ok(meta) => format!(" {} bytes", meta.len()),
+            Err(_) => " File not found".to_string(),
+        }
+    };
+    let info_widget = Paragraph::new(info)
+        .style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(info_widget, chunks[2]);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_kv_table(
+    frame: &mut Frame,
+    form_pairs: &[KvPair],
+    multipart_fields: &[MultipartField],
+    is_multipart: bool,
+    focus: KvFocus,
+    is_focused: bool,
+    is_editing: bool,
+    edit_textarea: &Option<TextArea<'static>>,
+    area: Rect,
+) {
+    let rows: Vec<KvRowData> = if is_multipart {
+        multipart_fields
+            .iter()
+            .map(|f| KvRowData {
+                key: &f.key,
+                value: &f.value,
+                enabled: f.enabled,
+                type_label: match f.field_type {
+                    MultipartFieldType::Text => "Text",
+                    MultipartFieldType::File => "File",
+                },
+            })
+            .collect()
+    } else {
+        form_pairs
+            .iter()
+            .map(|p| KvRowData {
+                key: &p.key,
+                value: &p.value,
+                enabled: p.enabled,
+                type_label: "",
+            })
+            .collect()
+    };
+
+    if area.height < 2 {
+        return;
+    }
+
+    // Header row
+    let header_area = Rect::new(area.x, area.y, area.width, 1);
+    let data_area = Rect::new(area.x, area.y + 1, area.width, area.height.saturating_sub(1));
+
+    let col_constraints = if is_multipart {
+        vec![
+            Constraint::Length(3),
+            Constraint::Percentage(30),
+            Constraint::Length(6),
+            Constraint::Percentage(50),
+        ]
+    } else {
+        vec![
+            Constraint::Length(3),
+            Constraint::Percentage(45),
+            Constraint::Percentage(45),
+        ]
+    };
+
+    let header_cols = Layout::horizontal(col_constraints.clone()).split(header_area);
+    let header_style = Style::default()
+        .fg(Color::DarkGray)
+        .add_modifier(Modifier::BOLD);
+
+    frame.render_widget(
+        Paragraph::new(" ").style(header_style),
+        header_cols[0],
+    );
+    frame.render_widget(
+        Paragraph::new(" Key").style(header_style),
+        header_cols[1],
+    );
+    if is_multipart {
+        frame.render_widget(
+            Paragraph::new(" Type").style(header_style),
+            header_cols[2],
+        );
+        frame.render_widget(
+            Paragraph::new(" Value").style(header_style),
+            header_cols[3],
+        );
+    } else {
+        frame.render_widget(
+            Paragraph::new(" Value").style(header_style),
+            header_cols[2],
+        );
+    }
+
+    // Scroll: keep focused row visible
+    let visible_rows = data_area.height as usize;
+    let scroll_offset = if is_focused && focus.row >= visible_rows {
+        focus.row - visible_rows + 1
+    } else {
+        0
+    };
+
+    for (display_idx, row_idx) in (scroll_offset..rows.len())
+        .enumerate()
+        .take(visible_rows)
+    {
+        let row = &rows[row_idx];
+        let y = data_area.y + display_idx as u16;
+        let row_area = Rect::new(data_area.x, y, data_area.width, 1);
+        let cols = Layout::horizontal(col_constraints.clone()).split(row_area);
+
+        let is_active_row = is_focused && focus.row == row_idx;
+        let row_style = if !row.enabled {
+            Style::default().fg(Color::DarkGray)
+        } else if is_active_row {
+            Style::default().fg(Color::White)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+
+        // Enabled indicator
+        let toggle = if row.enabled { " \u{2713}" } else { " \u{2717}" };
+        let toggle_style = if row.enabled {
+            Style::default().fg(Color::Green)
+        } else {
+            Style::default().fg(Color::Red)
+        };
+        frame.render_widget(
+            Paragraph::new(toggle).style(toggle_style),
+            cols[0],
+        );
+
+        // Key column
+        let key_active = is_active_row && focus.column == KvColumn::Key;
+        let key_style = if key_active && is_editing {
+            Style::default().fg(Color::Black).bg(Color::Cyan)
+        } else if key_active {
+            Style::default().fg(Color::Cyan)
+        } else {
+            row_style
+        };
+
+        if key_active && is_editing {
+            if let Some(ta) = edit_textarea {
+                frame.render_widget(ta, cols[1]);
+            }
+        } else {
+            let key_display = if row.key.is_empty() && !is_active_row {
+                ""
+            } else if row.key.is_empty() {
+                ""
+            } else {
+                row.key
+            };
+            frame.render_widget(
+                Paragraph::new(format!(" {}", key_display)).style(key_style),
+                cols[1],
+            );
+        }
+
+        if is_multipart {
+            // Type column
+            let type_style = if is_active_row && focus.column == KvColumn::Value {
+                // Type column isn't a separate focus target in this simplified version
+                row_style
+            } else {
+                row_style
+            };
+            frame.render_widget(
+                Paragraph::new(format!(" {}", row.type_label)).style(type_style),
+                cols[2],
+            );
+
+            // Value column
+            let val_active = is_active_row && focus.column == KvColumn::Value;
+            let val_style = if val_active && is_editing {
+                Style::default().fg(Color::Black).bg(Color::Cyan)
+            } else if val_active {
+                Style::default().fg(Color::Cyan)
+            } else {
+                row_style
+            };
+
+            if val_active && is_editing {
+                if let Some(ta) = edit_textarea {
+                    frame.render_widget(ta, cols[3]);
+                }
+            } else {
+                frame.render_widget(
+                    Paragraph::new(format!(" {}", row.value)).style(val_style),
+                    cols[3],
+                );
+            }
+        } else {
+            // Value column
+            let val_active = is_active_row && focus.column == KvColumn::Value;
+            let val_style = if val_active && is_editing {
+                Style::default().fg(Color::Black).bg(Color::Cyan)
+            } else if val_active {
+                Style::default().fg(Color::Cyan)
+            } else {
+                row_style
+            };
+
+            if val_active && is_editing {
+                if let Some(ta) = edit_textarea {
+                    frame.render_widget(ta, cols[2]);
+                }
+            } else {
+                frame.render_widget(
+                    Paragraph::new(format!(" {}", row.value)).style(val_style),
+                    cols[2],
+                );
+            }
+        }
+    }
+}
+
+struct KvRowData<'a> {
+    key: &'a str,
+    value: &'a str,
+    enabled: bool,
+    type_label: &'a str,
 }
 
 fn render_body_mode_selector(frame: &mut Frame, app: &App, area: Rect) {
@@ -359,15 +634,31 @@ fn render_body_mode_selector(frame: &mut Frame, app: &App, area: Rect) {
         && app.focus.request_field == RequestField::Body;
     let on_selector = body_focused && app.focus.body_field == BodyField::ModeSelector;
 
-    let mode_text = format!(" Type: [{}]", app.request.body_mode.as_str());
-
     let style = if on_selector {
         Style::default().fg(Color::Cyan)
     } else {
         Style::default().fg(Color::DarkGray)
     };
 
-    let line = Line::from(Span::styled(mode_text, style));
+    let mut spans = vec![Span::styled(
+        format!(" Type: [{}]", app.request.body_mode.as_str()),
+        style,
+    )];
+
+    // JSON validation indicator
+    if app.request.body_mode == BodyMode::Json {
+        let body_text = app.request.body_text();
+        if !body_text.trim().is_empty() {
+            let is_valid = serde_json::from_str::<serde_json::Value>(&body_text).is_ok();
+            if is_valid {
+                spans.push(Span::styled(" \u{2713}", Style::default().fg(Color::Green)));
+            } else {
+                spans.push(Span::styled(" \u{2717}", Style::default().fg(Color::Red)));
+            }
+        }
+    }
+
+    let line = Line::from(spans);
     frame.render_widget(Paragraph::new(line), area);
 }
 
