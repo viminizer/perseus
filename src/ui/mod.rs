@@ -43,6 +43,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         render_auth_type_popup(frame, app, request_split[1]);
     }
 
+    if app.show_env_popup {
+        render_env_popup(frame, app);
+    }
+
     if app.show_help {
         render_help_overlay(frame);
     }
@@ -364,6 +368,66 @@ fn render_auth_type_popup(frame: &mut Frame, app: &App, area: Rect) {
             Line::from(Span::styled(format!(" {} ", auth_type.as_str()), style))
         })
         .collect();
+
+    let list = Paragraph::new(lines);
+    frame.render_widget(list, inner);
+}
+
+fn render_env_popup(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+
+    let item_count = app.environments.len() + 1; // +1 for "No Environment"
+    let width: u16 = 30;
+    let height: u16 = item_count as u16 + 2; // +2 for border
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let popup_area = Rect::new(x, y, width.min(area.width), height.min(area.height));
+
+    frame.render_widget(Clear, popup_area);
+
+    let popup_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(" Environment ");
+
+    let inner = popup_block.inner(popup_area);
+    frame.render_widget(popup_block, popup_area);
+
+    let active_name = app.active_environment_name.as_deref();
+
+    let mut lines: Vec<Line> = Vec::with_capacity(item_count);
+
+    // "No Environment" entry (index 0)
+    let is_selected = app.env_popup_index == 0;
+    let is_active = active_name.is_none();
+    let label = if is_active {
+        " \u{2713} No Environment "
+    } else {
+        "   No Environment "
+    };
+    let style = if is_selected {
+        Style::default().fg(Color::Black).bg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    lines.push(Line::from(Span::styled(label, style)));
+
+    // Named environments (index 1..N)
+    for (i, env) in app.environments.iter().enumerate() {
+        let is_selected = app.env_popup_index == i + 1;
+        let is_active = active_name == Some(env.name.as_str());
+        let label = if is_active {
+            format!(" \u{2713} {} ", env.name)
+        } else {
+            format!("   {} ", env.name)
+        };
+        let style = if is_selected {
+            Style::default().fg(Color::Black).bg(Color::Cyan)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        lines.push(Line::from(Span::styled(label, style)));
+    }
 
     let list = Paragraph::new(lines);
     frame.render_widget(list, inner);
@@ -1345,7 +1409,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         match app.app_mode {
             AppMode::Navigation => {
-                "hjkl:nav  e:sidebar  Enter:edit  i:insert  Ctrl+r:send  Ctrl+s:save  Ctrl+e:toggle  ?:help  q:quit"
+                "hjkl:nav  e:sidebar  Enter:edit  i:insert  Ctrl+r:send  Ctrl+s:save  Ctrl+n:env  Ctrl+e:toggle  ?:help  q:quit"
             }
             AppMode::Editing => match app.vim.mode {
                 VimMode::Normal => {
@@ -1370,6 +1434,17 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         Span::raw("  │  "),
         Span::styled(hints, Style::default().fg(Color::DarkGray)),
     ];
+
+    if let Some(env_name) = app.active_environment_name.as_deref() {
+        status_spans.push(Span::raw("  │  "));
+        status_spans.push(Span::styled(
+            format!(" {} ", env_name),
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Blue)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
 
     if let Some(msg) = app.clipboard_toast_message() {
         status_spans.push(Span::raw("  │  "));
@@ -1419,6 +1494,7 @@ fn render_help_overlay(frame: &mut Frame) {
         Line::from("  Ctrl+e      Toggle sidebar (enter sidebar when opening)"),
         Line::from("  Ctrl+p      Project switcher"),
         Line::from("  Ctrl+s      Save request"),
+        Line::from("  Ctrl+n      Switch environment"),
         Line::from("  q / Esc     Quit"),
         Line::from(""),
         Line::from(Span::styled(
