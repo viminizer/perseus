@@ -131,15 +131,19 @@ pub enum HttpMethod {
     Put,
     Patch,
     Delete,
+    Head,
+    Options,
 }
 
 impl HttpMethod {
-    pub const ALL: [HttpMethod; 5] = [
+    pub const ALL: [HttpMethod; 7] = [
         HttpMethod::Get,
         HttpMethod::Post,
         HttpMethod::Put,
         HttpMethod::Patch,
         HttpMethod::Delete,
+        HttpMethod::Head,
+        HttpMethod::Options,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -149,6 +153,8 @@ impl HttpMethod {
             HttpMethod::Put => "PUT",
             HttpMethod::Patch => "PATCH",
             HttpMethod::Delete => "DELETE",
+            HttpMethod::Head => "HEAD",
+            HttpMethod::Options => "OPTIONS",
         }
     }
 
@@ -159,6 +165,8 @@ impl HttpMethod {
             HttpMethod::Put => 2,
             HttpMethod::Patch => 3,
             HttpMethod::Delete => 4,
+            HttpMethod::Head => 5,
+            HttpMethod::Options => 6,
         }
     }
 
@@ -166,14 +174,47 @@ impl HttpMethod {
         Self::ALL[index % Self::ALL.len()]
     }
 
-    pub fn from_str(value: &str) -> Self {
-        match value.to_uppercase().as_str() {
-            "POST" => HttpMethod::Post,
-            "PUT" => HttpMethod::Put,
-            "PATCH" => HttpMethod::Patch,
-            "DELETE" => HttpMethod::Delete,
-            _ => HttpMethod::Get,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Method {
+    Standard(HttpMethod),
+    Custom(String),
+}
+
+impl Default for Method {
+    fn default() -> Self {
+        Method::Standard(HttpMethod::Get)
+    }
+}
+
+impl Method {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Method::Standard(m) => m.as_str(),
+            Method::Custom(s) => s.as_str(),
         }
+    }
+
+    pub fn from_str(value: &str) -> Self {
+        let upper = value.to_uppercase();
+        match upper.as_str() {
+            "GET" => Method::Standard(HttpMethod::Get),
+            "POST" => Method::Standard(HttpMethod::Post),
+            "PUT" => Method::Standard(HttpMethod::Put),
+            "PATCH" => Method::Standard(HttpMethod::Patch),
+            "DELETE" => Method::Standard(HttpMethod::Delete),
+            "HEAD" => Method::Standard(HttpMethod::Head),
+            "OPTIONS" => Method::Standard(HttpMethod::Options),
+            _ => Method::Custom(upper),
+        }
+    }
+
+}
+
+impl From<HttpMethod> for Method {
+    fn from(m: HttpMethod) -> Self {
+        Method::Standard(m)
     }
 }
 
@@ -274,7 +315,7 @@ pub struct SidebarLine {
     pub marker: String,
     pub label: String,
     pub kind: NodeKind,
-    pub method: Option<HttpMethod>,
+    pub method: Option<Method>,
 }
 
 struct SidebarCache {
@@ -307,7 +348,7 @@ impl SidebarCache {
 }
 
 pub struct RequestState {
-    pub method: HttpMethod,
+    pub method: Method,
     pub url_editor: TextArea<'static>,
     pub headers_editor: TextArea<'static>,
     pub body_editor: TextArea<'static>,
@@ -332,14 +373,14 @@ impl RequestState {
         configure_editor(&mut body_editor, "Request body...");
 
         Self {
-            method: HttpMethod::default(),
+            method: Method::default(),
             url_editor,
             headers_editor,
             body_editor,
         }
     }
 
-    pub fn set_contents(&mut self, method: HttpMethod, url: String, headers: String, body: String) {
+    pub fn set_contents(&mut self, method: Method, url: String, headers: String, body: String) {
         self.method = method;
         let url_lines = if url.is_empty() { vec![String::new()] } else { vec![url] };
         let header_lines = if headers.is_empty() {
@@ -467,6 +508,8 @@ pub struct App {
     pub show_help: bool,
     pub show_method_popup: bool,
     pub method_popup_index: usize,
+    pub method_popup_custom_mode: bool,
+    pub method_custom_input: String,
     pub sidebar_visible: bool,
     pub sidebar_width: u16,
     pub collection: CollectionStore,
@@ -633,6 +676,8 @@ impl App {
             show_help: false,
             show_method_popup: false,
             method_popup_index: 0,
+            method_popup_custom_mode: false,
+            method_custom_input: String::new(),
             sidebar_visible,
             sidebar_width,
             collection,
@@ -908,7 +953,7 @@ impl App {
                 let method = if node.kind == NodeKind::Request {
                     node.request_method
                         .as_deref()
-                        .map(HttpMethod::from_str)
+                        .map(Method::from_str)
                 } else {
                     None
                 };
@@ -945,7 +990,7 @@ impl App {
             let method = if node.kind == NodeKind::Request {
                 node.request_method
                     .as_deref()
-                    .map(HttpMethod::from_str)
+                    .map(Method::from_str)
             } else {
                 None
             };
@@ -1079,7 +1124,7 @@ impl App {
         self.save_current_request_if_dirty();
         if let Some(item) = self.collection.get_item(request_id) {
             if let Some(request) = &item.request {
-                let method = HttpMethod::from_str(&request.method);
+                let method = Method::from_str(&request.method);
                 let url = extract_url(&request.url);
                 let headers = headers_to_text(&request.header);
                 let body = request
@@ -2073,26 +2118,69 @@ impl App {
 
         // Handle method popup navigation when open
         if self.show_method_popup {
-            match key.code {
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.method_popup_index =
-                        (self.method_popup_index + 1) % HttpMethod::ALL.len();
+            let popup_item_count = HttpMethod::ALL.len() + 1; // 7 standard + "Custom..."
+
+            if self.method_popup_custom_mode {
+                // Text input mode for custom method
+                match key.code {
+                    KeyCode::Enter => {
+                        let input = self.method_custom_input.trim().to_string();
+                        if !input.is_empty()
+                            && input.is_ascii()
+                            && !input.contains(char::is_whitespace)
+                        {
+                            self.request.method = Method::Custom(input.to_uppercase());
+                            self.show_method_popup = false;
+                            self.method_popup_custom_mode = false;
+                            self.request_dirty = true;
+                        }
+                    }
+                    KeyCode::Esc => {
+                        self.method_custom_input.clear();
+                        self.method_popup_custom_mode = false;
+                        self.show_method_popup = false;
+                    }
+                    KeyCode::Backspace => {
+                        self.method_custom_input.pop();
+                    }
+                    KeyCode::Char(c) if c.is_ascii() && !c.is_whitespace() => {
+                        if self.method_custom_input.len() < 20 {
+                            self.method_custom_input.push(c.to_ascii_uppercase());
+                        }
+                    }
+                    _ => {}
                 }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.method_popup_index = if self.method_popup_index == 0 {
-                        HttpMethod::ALL.len() - 1
-                    } else {
-                        self.method_popup_index - 1
-                    };
+            } else {
+                // Standard popup navigation mode
+                match key.code {
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        self.method_popup_index =
+                            (self.method_popup_index + 1) % popup_item_count;
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.method_popup_index = if self.method_popup_index == 0 {
+                            popup_item_count - 1
+                        } else {
+                            self.method_popup_index - 1
+                        };
+                    }
+                    KeyCode::Enter => {
+                        if self.method_popup_index < HttpMethod::ALL.len() {
+                            self.request.method = Method::Standard(
+                                HttpMethod::from_index(self.method_popup_index),
+                            );
+                            self.show_method_popup = false;
+                            self.request_dirty = true;
+                        } else {
+                            // "Custom..." selected — enter text input mode
+                            self.method_popup_custom_mode = true;
+                        }
+                    }
+                    KeyCode::Esc => {
+                        self.show_method_popup = false;
+                    }
+                    _ => {}
                 }
-                KeyCode::Enter => {
-                    self.request.method = HttpMethod::from_index(self.method_popup_index);
-                    self.show_method_popup = false;
-                }
-                KeyCode::Esc => {
-                    self.show_method_popup = false;
-                }
-                _ => {}
             }
             return;
         }
@@ -2230,7 +2318,17 @@ impl App {
                 } else if in_request {
                     match self.focus.request_field {
                         RequestField::Method => {
-                            self.method_popup_index = self.request.method.index();
+                            match &self.request.method {
+                                Method::Standard(m) => {
+                                    self.method_popup_index = m.index();
+                                    self.method_custom_input.clear();
+                                }
+                                Method::Custom(s) => {
+                                    self.method_popup_index = HttpMethod::ALL.len();
+                                    self.method_custom_input = s.clone();
+                                }
+                            }
+                            self.method_popup_custom_mode = false;
                             self.show_method_popup = true;
                         }
                         RequestField::Send => {
@@ -2548,12 +2646,12 @@ impl App {
         self.response = ResponseStatus::Loading;
 
         let client = self.client.clone();
-        let method = self.request.method;
+        let method = self.request.method.clone();
         let headers = self.request.headers_text();
         let body = self.request.body_text();
 
         let handle = tokio::spawn(async move {
-            let result = http::send_request(&client, method, &url, &headers, &body).await;
+            let result = http::send_request(&client, &method, &url, &headers, &body).await;
             let _ = tx.send(result).await;
         });
         self.request_handle = Some(handle.abort_handle());
