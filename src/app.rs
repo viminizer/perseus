@@ -640,6 +640,8 @@ pub struct App {
     pub method_popup_index: usize,
     pub method_popup_custom_mode: bool,
     pub method_custom_input: String,
+    pub show_auth_type_popup: bool,
+    pub auth_type_popup_index: usize,
     pub sidebar_visible: bool,
     pub sidebar_width: u16,
     pub collection: CollectionStore,
@@ -808,6 +810,8 @@ impl App {
             method_popup_index: 0,
             method_popup_custom_mode: false,
             method_custom_input: String::new(),
+            show_auth_type_popup: false,
+            auth_type_popup_index: 0,
             sidebar_visible,
             sidebar_width,
             collection,
@@ -1812,7 +1816,8 @@ impl App {
                 RequestField::Url | RequestField::Headers | RequestField::Body => {
                     Some(YankTarget::Request)
                 }
-                RequestField::Method | RequestField::Send | RequestField::Auth => None,
+                RequestField::Auth if self.is_auth_text_field() => Some(YankTarget::Request),
+                _ => None,
             },
             Panel::Sidebar => None,
         }
@@ -1846,8 +1851,8 @@ impl App {
                 }
             },
             Panel::Request => {
-                if let Some(textarea) = self.request.active_editor(self.focus.request_field) {
-                    let yank = textarea.yank_text();
+                let yank = self.active_request_editor().map(|ta| ta.yank_text());
+                if let Some(yank) = yank {
                     if self.last_yank_request != yank {
                         self.last_yank_request = yank.clone();
                         new_yank = Some(yank);
@@ -1880,29 +1885,30 @@ impl App {
 
         let mut last_yank_update: Option<(YankTarget, String)> = None;
         let mut exit_to_normal = false;
+        let vim_mode = self.vim.mode;
 
         match target {
             YankTarget::Request => {
-                if let Some(textarea) = self.request.active_editor(self.focus.request_field) {
+                if let Some(textarea) = self.active_request_editor() {
                     if let Some(text) = clipboard_text.as_ref() {
                         textarea.set_yank_text(text.clone());
-                        if self.vim.mode == VimMode::Insert {
+                        if vim_mode == VimMode::Insert {
                             textarea.insert_str(text.as_str());
                         } else {
                             textarea.paste();
-                            if matches!(self.vim.mode, VimMode::Visual | VimMode::Operator(_)) {
+                            if matches!(vim_mode, VimMode::Visual | VimMode::Operator(_)) {
                                 exit_to_normal = true;
                             }
                         }
                         last_yank_update = Some((target, text.clone()));
-                    } else if self.vim.mode == VimMode::Insert {
+                    } else if vim_mode == VimMode::Insert {
                         let fallback = textarea.yank_text();
                         if !fallback.is_empty() {
                             textarea.insert_str(fallback);
                         }
                     } else {
                         textarea.paste();
-                        if matches!(self.vim.mode, VimMode::Visual | VimMode::Operator(_)) {
+                        if matches!(vim_mode, VimMode::Visual | VimMode::Operator(_)) {
                             exit_to_normal = true;
                         }
                     }
@@ -1978,14 +1984,15 @@ impl App {
 
         let mut yank: Option<String> = None;
         let mut exit_visual = false;
+        let vim_mode = self.vim.mode;
 
         match target {
             YankTarget::Request => {
-                if let Some(textarea) = self.request.active_editor(self.focus.request_field) {
+                if let Some(textarea) = self.active_request_editor() {
                     if textarea.is_selecting() {
                         textarea.copy();
                         yank = Some(textarea.yank_text());
-                        if self.vim.mode == VimMode::Visual {
+                        if vim_mode == VimMode::Visual {
                             exit_visual = true;
                         }
                     }
@@ -2293,6 +2300,12 @@ impl App {
             return;
         }
 
+        // Handle auth type popup when open
+        if self.show_auth_type_popup {
+            self.handle_auth_type_popup(key);
+            return;
+        }
+
         // Handle method popup navigation when open
         if self.show_method_popup {
             let popup_item_count = HttpMethod::ALL.len() + 1; // 7 standard + "Custom..."
@@ -2463,6 +2476,21 @@ impl App {
             }
         }
 
+        // Auth sub-field navigation: j/k navigates within auth fields when focused
+        if in_request && self.focus.request_field == RequestField::Auth {
+            match key.code {
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.next_auth_field();
+                    return;
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.prev_auth_field();
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         // Arrow keys + bare hjkl for navigation
         match key.code {
             KeyCode::Left | KeyCode::Char('h') => {
@@ -2519,7 +2547,7 @@ impl App {
                             self.enter_editing(VimMode::Normal);
                         }
                         RequestField::Auth => {
-                            // Auth sub-field interaction handled in Phase E
+                            self.handle_auth_enter();
                         }
                     }
                 } else if in_response
@@ -2533,6 +2561,11 @@ impl App {
                 if in_sidebar {
                     self.app_mode = AppMode::Sidebar;
                 } else if in_request && self.is_editable_field() {
+                    self.enter_editing(VimMode::Insert);
+                } else if in_request
+                    && self.focus.request_field == RequestField::Auth
+                    && self.is_auth_text_field()
+                {
                     self.enter_editing(VimMode::Insert);
                 } else if in_response
                     && matches!(self.response, ResponseStatus::Success(_))
@@ -2687,7 +2720,7 @@ impl App {
                         match target {
                             YankTarget::Request => {
                                 if let Some(textarea) =
-                                    self.request.active_editor(self.focus.request_field)
+                                    self.active_request_editor()
                                 {
                                     textarea.set_yank_text(text.clone());
                                 }
@@ -2723,7 +2756,8 @@ impl App {
             }
         } else {
             let field = self.focus.request_field;
-            let single_line = field == RequestField::Url;
+            let single_line = field == RequestField::Url
+                || (field == RequestField::Auth && self.is_auth_text_field());
             if let Some(textarea) = self.request.active_editor(field) {
                 self.vim.transition(input, textarea, single_line)
             } else {
@@ -2845,10 +2879,11 @@ impl App {
     }
 
     fn is_editable_field(&self) -> bool {
-        matches!(
-            self.focus.request_field,
-            RequestField::Url | RequestField::Headers | RequestField::Body
-        )
+        match self.focus.request_field {
+            RequestField::Url | RequestField::Headers | RequestField::Body => true,
+            RequestField::Auth => self.is_auth_text_field(),
+            _ => false,
+        }
     }
 
     fn next_horizontal(&mut self) {
@@ -2987,6 +3022,156 @@ impl App {
 
     fn prev_response_tab(&mut self) {
         self.next_response_tab();
+    }
+
+    fn handle_auth_type_popup(&mut self, key: KeyEvent) {
+        let count = AuthType::ALL.len();
+        match key.code {
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.auth_type_popup_index = (self.auth_type_popup_index + 1) % count;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.auth_type_popup_index = if self.auth_type_popup_index == 0 {
+                    count - 1
+                } else {
+                    self.auth_type_popup_index - 1
+                };
+            }
+            KeyCode::Enter => {
+                let new_type = AuthType::from_index(self.auth_type_popup_index);
+                if new_type != self.request.auth_type {
+                    self.request.auth_type = new_type;
+                    // Clear previous type's data
+                    self.request.auth_token_editor = TextArea::default();
+                    configure_editor(&mut self.request.auth_token_editor, "Token");
+                    self.request.auth_username_editor = TextArea::default();
+                    configure_editor(&mut self.request.auth_username_editor, "Username");
+                    self.request.auth_password_editor = TextArea::default();
+                    configure_editor(&mut self.request.auth_password_editor, "Password");
+                    self.request.auth_key_name_editor = TextArea::default();
+                    configure_editor(&mut self.request.auth_key_name_editor, "Key name");
+                    self.request.auth_key_value_editor = TextArea::default();
+                    configure_editor(&mut self.request.auth_key_value_editor, "Key value");
+                    self.request.api_key_location = ApiKeyLocation::Header;
+                    self.apply_editor_tab_size();
+                    self.request_dirty = true;
+                }
+                self.show_auth_type_popup = false;
+                // Move focus to first editable field of the new type
+                self.focus.auth_field = self.first_auth_field();
+            }
+            KeyCode::Esc => {
+                self.show_auth_type_popup = false;
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_auth_enter(&mut self) {
+        match self.focus.auth_field {
+            AuthField::AuthType => {
+                self.auth_type_popup_index = self.request.auth_type.index();
+                self.show_auth_type_popup = true;
+            }
+            AuthField::KeyLocation => {
+                self.request.api_key_location = match self.request.api_key_location {
+                    ApiKeyLocation::Header => ApiKeyLocation::QueryParam,
+                    ApiKeyLocation::QueryParam => ApiKeyLocation::Header,
+                };
+                self.request_dirty = true;
+            }
+            AuthField::Token
+            | AuthField::Username
+            | AuthField::Password
+            | AuthField::KeyName
+            | AuthField::KeyValue => {
+                self.enter_editing(VimMode::Normal);
+            }
+        }
+    }
+
+    fn is_auth_text_field(&self) -> bool {
+        matches!(
+            self.focus.auth_field,
+            AuthField::Token
+                | AuthField::Username
+                | AuthField::Password
+                | AuthField::KeyName
+                | AuthField::KeyValue
+        )
+    }
+
+    fn auth_fields_for_type(&self) -> &[AuthField] {
+        match self.request.auth_type {
+            AuthType::NoAuth => &[AuthField::AuthType],
+            AuthType::Bearer => &[AuthField::AuthType, AuthField::Token],
+            AuthType::Basic => &[AuthField::AuthType, AuthField::Username, AuthField::Password],
+            AuthType::ApiKey => &[
+                AuthField::AuthType,
+                AuthField::KeyName,
+                AuthField::KeyValue,
+                AuthField::KeyLocation,
+            ],
+        }
+    }
+
+    fn first_auth_field(&self) -> AuthField {
+        let fields = self.auth_fields_for_type();
+        if fields.len() > 1 {
+            fields[1]
+        } else {
+            fields[0]
+        }
+    }
+
+    fn next_auth_field(&mut self) {
+        let fields = self.auth_fields_for_type();
+        let current_idx = fields
+            .iter()
+            .position(|f| *f == self.focus.auth_field)
+            .unwrap_or(0);
+        let next_idx = if current_idx + 1 < fields.len() {
+            current_idx + 1
+        } else {
+            // At the bottom of auth fields — move to response panel
+            self.focus.panel = Panel::Response;
+            return;
+        };
+        self.focus.auth_field = fields[next_idx];
+    }
+
+    fn prev_auth_field(&mut self) {
+        let fields = self.auth_fields_for_type();
+        let current_idx = fields
+            .iter()
+            .position(|f| *f == self.focus.auth_field)
+            .unwrap_or(0);
+        if current_idx == 0 {
+            // At the top of auth fields — move to URL row
+            self.focus.request_field = RequestField::Url;
+        } else {
+            self.focus.auth_field = fields[current_idx - 1];
+        }
+    }
+
+    fn active_auth_editor(&mut self) -> Option<&mut TextArea<'static>> {
+        match self.focus.auth_field {
+            AuthField::Token => Some(&mut self.request.auth_token_editor),
+            AuthField::Username => Some(&mut self.request.auth_username_editor),
+            AuthField::Password => Some(&mut self.request.auth_password_editor),
+            AuthField::KeyName => Some(&mut self.request.auth_key_name_editor),
+            AuthField::KeyValue => Some(&mut self.request.auth_key_value_editor),
+            AuthField::AuthType | AuthField::KeyLocation => None,
+        }
+    }
+
+    /// Returns the currently active request editor, including auth TextAreas.
+    fn active_request_editor(&mut self) -> Option<&mut TextArea<'static>> {
+        if self.focus.request_field == RequestField::Auth {
+            self.active_auth_editor()
+        } else {
+            self.active_request_editor()
+        }
     }
 }
 

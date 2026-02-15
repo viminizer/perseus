@@ -39,6 +39,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         render_method_popup(frame, app, input_layout.method_area);
     }
 
+    if app.show_auth_type_popup {
+        render_auth_type_popup(frame, app, request_split[1]);
+    }
+
     if app.show_help {
         render_help_overlay(frame);
     }
@@ -320,6 +324,46 @@ fn render_method_popup(frame: &mut Frame, app: &App, method_area: Rect) {
         };
         lines.push(Line::from(Span::styled(" Custom... ", style)));
     }
+
+    let list = Paragraph::new(lines);
+    frame.render_widget(list, inner);
+}
+
+fn render_auth_type_popup(frame: &mut Frame, app: &App, area: Rect) {
+    let width: u16 = 20;
+    let height: u16 = AuthType::ALL.len() as u16 + 2;
+    let x = area.x + 2;
+    let y = area.y + 2;
+    let popup_area = Rect::new(
+        x.min(area.right().saturating_sub(width)),
+        y.min(area.bottom().saturating_sub(height)),
+        width.min(area.width),
+        height.min(area.height),
+    );
+
+    frame.render_widget(Clear, popup_area);
+
+    let popup_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(" Auth Type ");
+
+    let inner = popup_block.inner(popup_area);
+    frame.render_widget(popup_block, popup_area);
+
+    let lines: Vec<Line> = AuthType::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, auth_type)| {
+            let is_selected = i == app.auth_type_popup_index;
+            let style = if is_selected {
+                Style::default().fg(Color::Black).bg(Color::Cyan)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            Line::from(Span::styled(format!(" {} ", auth_type.as_str()), style))
+        })
+        .collect();
 
     let list = Paragraph::new(lines);
     frame.render_widget(list, inner);
