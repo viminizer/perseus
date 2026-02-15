@@ -659,6 +659,76 @@ impl RequestState {
         self.body_binary_path_editor.lines().join("")
     }
 
+    pub fn build_body_content(&self) -> http::BodyContent {
+        match self.body_mode {
+            BodyMode::Raw => {
+                let text = self.body_text();
+                if text.trim().is_empty() {
+                    http::BodyContent::None
+                } else {
+                    http::BodyContent::Raw(text)
+                }
+            }
+            BodyMode::Json => {
+                let text = self.body_text();
+                if text.trim().is_empty() {
+                    http::BodyContent::None
+                } else {
+                    http::BodyContent::Json(text)
+                }
+            }
+            BodyMode::Xml => {
+                let text = self.body_text();
+                if text.trim().is_empty() {
+                    http::BodyContent::None
+                } else {
+                    http::BodyContent::Xml(text)
+                }
+            }
+            BodyMode::FormUrlEncoded => {
+                let pairs: Vec<(String, String)> = self
+                    .body_form_pairs
+                    .iter()
+                    .filter(|p| p.enabled && !(p.key.is_empty() && p.value.is_empty()))
+                    .map(|p| (p.key.clone(), p.value.clone()))
+                    .collect();
+                if pairs.is_empty() {
+                    http::BodyContent::None
+                } else {
+                    http::BodyContent::FormUrlEncoded(pairs)
+                }
+            }
+            BodyMode::Multipart => {
+                let parts: Vec<http::MultipartPart> = self
+                    .body_multipart_fields
+                    .iter()
+                    .filter(|f| f.enabled && !f.key.is_empty())
+                    .map(|f| http::MultipartPart {
+                        key: f.key.clone(),
+                        value: f.value.clone(),
+                        field_type: match f.field_type {
+                            MultipartFieldType::Text => http::MultipartPartType::Text,
+                            MultipartFieldType::File => http::MultipartPartType::File,
+                        },
+                    })
+                    .collect();
+                if parts.is_empty() {
+                    http::BodyContent::None
+                } else {
+                    http::BodyContent::Multipart(parts)
+                }
+            }
+            BodyMode::Binary => {
+                let path = self.body_binary_path_text();
+                if path.trim().is_empty() {
+                    http::BodyContent::None
+                } else {
+                    http::BodyContent::Binary(path)
+                }
+            }
+        }
+    }
+
     pub fn auth_token_text(&self) -> String {
         self.auth_token_editor.lines().join("")
     }
@@ -1433,12 +1503,91 @@ impl App {
         let method = self.request.method.as_str().to_string();
         let url = self.request.url_text();
         let headers = storage::parse_headers(&self.request.headers_text());
-        let body_raw = self.request.body_text();
-        let body = if body_raw.trim().is_empty() {
-            None
-        } else {
-            Some(body_raw)
+
+        let body = match self.request.body_mode {
+            BodyMode::Raw => {
+                let text = self.request.body_text();
+                if text.trim().is_empty() {
+                    None
+                } else {
+                    Some(storage::PostmanBody::raw(&text))
+                }
+            }
+            BodyMode::Json => {
+                let text = self.request.body_text();
+                if text.trim().is_empty() {
+                    None
+                } else {
+                    Some(storage::PostmanBody::json(&text))
+                }
+            }
+            BodyMode::Xml => {
+                let text = self.request.body_text();
+                if text.trim().is_empty() {
+                    None
+                } else {
+                    Some(storage::PostmanBody::xml(&text))
+                }
+            }
+            BodyMode::FormUrlEncoded => {
+                let pairs: Vec<storage::PostmanKvPair> = self
+                    .request
+                    .body_form_pairs
+                    .iter()
+                    .filter(|p| !(p.key.is_empty() && p.value.is_empty()))
+                    .map(|p| storage::PostmanKvPair {
+                        key: p.key.clone(),
+                        value: p.value.clone(),
+                        disabled: if p.enabled { None } else { Some(true) },
+                    })
+                    .collect();
+                if pairs.is_empty() {
+                    None
+                } else {
+                    Some(storage::PostmanBody::urlencoded(pairs))
+                }
+            }
+            BodyMode::Multipart => {
+                let params: Vec<storage::PostmanFormParam> = self
+                    .request
+                    .body_multipart_fields
+                    .iter()
+                    .filter(|f| !f.key.is_empty())
+                    .map(|f| storage::PostmanFormParam {
+                        key: f.key.clone(),
+                        value: if f.field_type == MultipartFieldType::Text {
+                            Some(f.value.clone())
+                        } else {
+                            None
+                        },
+                        src: if f.field_type == MultipartFieldType::File {
+                            Some(f.value.clone())
+                        } else {
+                            None
+                        },
+                        param_type: match f.field_type {
+                            MultipartFieldType::Text => "text".to_string(),
+                            MultipartFieldType::File => "file".to_string(),
+                        },
+                        disabled: if f.enabled { None } else { Some(true) },
+                    })
+                    .collect();
+                if params.is_empty() {
+                    None
+                } else {
+                    Some(storage::PostmanBody::formdata(params))
+                }
+            }
+            BodyMode::Binary => {
+                let path = self.request.body_binary_path_text();
+                if path.trim().is_empty() {
+                    None
+                } else {
+                    Some(storage::PostmanBody::file(&path))
+                }
+            }
         };
+
         let auth = match self.request.auth_type {
             AuthType::NoAuth => None,
             AuthType::Bearer => {
@@ -1458,7 +1607,9 @@ impl App {
                 },
             )),
         };
-        let mut req = PostmanRequest::new(method, url, headers, body);
+
+        let mut req = PostmanRequest::new(method, url, headers, None);
+        req.body = body;
         req.auth = auth;
         req
     }
@@ -1473,18 +1624,113 @@ impl App {
             let method = Method::from_str(&request.method);
             let url = extract_url(&request.url);
             let headers = headers_to_text(&request.header);
-            let body = request
+            let raw_body = request
                 .body
                 .as_ref()
                 .and_then(|b| b.raw.clone())
                 .unwrap_or_default();
-            self.request.set_contents(method, url, headers, body);
+            self.request.set_contents(method, url, headers, raw_body);
+            self.load_body_mode_from_postman(&request);
             self.load_auth_from_postman(&request);
             self.apply_editor_tab_size();
             self.current_request_id = Some(request_id);
             self.request_dirty = false;
             self.focus.panel = Panel::Request;
             self.focus.request_field = RequestField::Url;
+            self.focus.body_field = BodyField::ModeSelector;
+        }
+    }
+
+    fn load_body_mode_from_postman(&mut self, request: &PostmanRequest) {
+        if let Some(body) = &request.body {
+            match body.mode.as_str() {
+                "raw" => {
+                    let language = body
+                        .options
+                        .as_ref()
+                        .and_then(|o| o.raw.as_ref())
+                        .map(|r| r.language.as_str());
+                    self.request.body_mode = match language {
+                        Some("json") => BodyMode::Json,
+                        Some("xml") => BodyMode::Xml,
+                        _ => BodyMode::Raw,
+                    };
+                    // Raw text is already loaded by set_contents above
+                }
+                "urlencoded" => {
+                    self.request.body_mode = BodyMode::FormUrlEncoded;
+                    if let Some(pairs) = &body.urlencoded {
+                        self.request.body_form_pairs = pairs
+                            .iter()
+                            .map(|p| KvPair {
+                                key: p.key.clone(),
+                                value: p.value.clone(),
+                                enabled: !p.disabled.unwrap_or(false),
+                            })
+                            .collect();
+                    }
+                    if self.request.body_form_pairs.is_empty()
+                        || self
+                            .request
+                            .body_form_pairs
+                            .last()
+                            .map(|p| !p.key.is_empty() || !p.value.is_empty())
+                            .unwrap_or(true)
+                    {
+                        self.request.body_form_pairs.push(KvPair::new_empty());
+                    }
+                }
+                "formdata" => {
+                    self.request.body_mode = BodyMode::Multipart;
+                    if let Some(params) = &body.formdata {
+                        self.request.body_multipart_fields = params
+                            .iter()
+                            .map(|p| MultipartField {
+                                key: p.key.clone(),
+                                value: match p.param_type.as_str() {
+                                    "file" => p.src.clone().unwrap_or_default(),
+                                    _ => p.value.clone().unwrap_or_default(),
+                                },
+                                field_type: match p.param_type.as_str() {
+                                    "file" => MultipartFieldType::File,
+                                    _ => MultipartFieldType::Text,
+                                },
+                                enabled: !p.disabled.unwrap_or(false),
+                            })
+                            .collect();
+                    }
+                    if self.request.body_multipart_fields.is_empty()
+                        || self
+                            .request
+                            .body_multipart_fields
+                            .last()
+                            .map(|f| !f.key.is_empty())
+                            .unwrap_or(true)
+                    {
+                        self.request
+                            .body_multipart_fields
+                            .push(MultipartField::new_empty());
+                    }
+                }
+                "file" => {
+                    self.request.body_mode = BodyMode::Binary;
+                    if let Some(file_ref) = &body.file {
+                        if let Some(src) = &file_ref.src {
+                            self.request.body_binary_path_editor =
+                                TextArea::new(vec![src.clone()]);
+                            configure_editor(
+                                &mut self.request.body_binary_path_editor,
+                                "File path...",
+                            );
+                        }
+                    }
+                }
+                _ => {
+                    self.request.body_mode = BodyMode::Raw;
+                }
+            }
+        } else {
+            self.request.body_mode = BodyMode::Raw;
         }
     }
 
@@ -3248,8 +3494,7 @@ impl App {
         let (url, _) = environment::substitute(&raw_url, &variables);
         let (headers, _) =
             environment::substitute(&self.request.headers_text(), &variables);
-        let (body, _) =
-            environment::substitute(&self.request.body_text(), &variables);
+        let body = self.build_resolved_body_content(&variables);
         let auth = self.build_resolved_auth_config(&variables);
 
         self.response = ResponseStatus::Loading;
@@ -3259,7 +3504,7 @@ impl App {
 
         let handle = tokio::spawn(async move {
             let result =
-                http::send_request(&client, &method, &url, &headers, &body, &auth).await;
+                http::send_request(&client, &method, &url, &headers, body, &auth).await;
             let _ = tx.send(result).await;
         });
         self.request_handle = Some(handle.abort_handle());
@@ -3292,6 +3537,90 @@ impl App {
                     key,
                     value,
                     location: self.request.api_key_location,
+                }
+            }
+        }
+    }
+
+    fn build_resolved_body_content(
+        &self,
+        variables: &std::collections::HashMap<String, String>,
+    ) -> http::BodyContent {
+        match self.request.body_mode {
+            BodyMode::Raw => {
+                let (text, _) = environment::substitute(&self.request.body_text(), variables);
+                if text.trim().is_empty() {
+                    http::BodyContent::None
+                } else {
+                    http::BodyContent::Raw(text)
+                }
+            }
+            BodyMode::Json => {
+                let (text, _) = environment::substitute(&self.request.body_text(), variables);
+                if text.trim().is_empty() {
+                    http::BodyContent::None
+                } else {
+                    http::BodyContent::Json(text)
+                }
+            }
+            BodyMode::Xml => {
+                let (text, _) = environment::substitute(&self.request.body_text(), variables);
+                if text.trim().is_empty() {
+                    http::BodyContent::None
+                } else {
+                    http::BodyContent::Xml(text)
+                }
+            }
+            BodyMode::FormUrlEncoded => {
+                let pairs: Vec<(String, String)> = self
+                    .request
+                    .body_form_pairs
+                    .iter()
+                    .filter(|p| p.enabled && !(p.key.is_empty() && p.value.is_empty()))
+                    .map(|p| {
+                        let (k, _) = environment::substitute(&p.key, variables);
+                        let (v, _) = environment::substitute(&p.value, variables);
+                        (k, v)
+                    })
+                    .collect();
+                if pairs.is_empty() {
+                    http::BodyContent::None
+                } else {
+                    http::BodyContent::FormUrlEncoded(pairs)
+                }
+            }
+            BodyMode::Multipart => {
+                let parts: Vec<http::MultipartPart> = self
+                    .request
+                    .body_multipart_fields
+                    .iter()
+                    .filter(|f| f.enabled && !f.key.is_empty())
+                    .map(|f| {
+                        let (k, _) = environment::substitute(&f.key, variables);
+                        let (v, _) = environment::substitute(&f.value, variables);
+                        http::MultipartPart {
+                            key: k,
+                            value: v,
+                            field_type: match f.field_type {
+                                MultipartFieldType::Text => http::MultipartPartType::Text,
+                                MultipartFieldType::File => http::MultipartPartType::File,
+                            },
+                        }
+                    })
+                    .collect();
+                if parts.is_empty() {
+                    http::BodyContent::None
+                } else {
+                    http::BodyContent::Multipart(parts)
+                }
+            }
+            BodyMode::Binary => {
+                let (path, _) =
+                    environment::substitute(&self.request.body_binary_path_text(), variables);
+                if path.trim().is_empty() {
+                    http::BodyContent::None
+                } else {
+                    http::BodyContent::Binary(path)
                 }
             }
         }
