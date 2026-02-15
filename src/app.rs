@@ -21,6 +21,7 @@ use tui_textarea::{Input, TextArea};
 use uuid::Uuid;
 
 use crate::clipboard::ClipboardProvider;
+use crate::config::{self, Config};
 use crate::perf;
 use crate::storage::{
     self, CollectionStore, NodeKind, PostmanHeader, PostmanItem, PostmanRequest, ProjectInfo,
@@ -452,6 +453,7 @@ impl ResponseHeadersRenderCache {
 pub struct App {
     running: bool,
     dirty: bool,
+    pub config: Config,
     pub request: RequestState,
     pub focus: FocusState,
     pub response: ResponseStatus,
@@ -492,10 +494,9 @@ impl App {
     const SPINNER_TICK: Duration = Duration::from_millis(100);
 
     pub fn new() -> Result<Self> {
-        let client = Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .expect("Failed to create HTTP client");
+        let config = config::load_config().map_err(anyhow::Error::msg)?;
+
+        let client = Self::build_client(&config)?;
 
         let mut collection = CollectionStore::load_or_init().map_err(anyhow::Error::msg)?;
         if collection.collection.item.is_empty() {
@@ -518,7 +519,7 @@ impl App {
 
         let ui_state = storage::load_ui_state()
             .map_err(anyhow::Error::msg)?
-            .unwrap_or_else(|| storage::UiState::new(project_list[0].id.to_string(), 32));
+            .unwrap_or_else(|| storage::UiState::new(project_list[0].id.to_string(), config.ui.sidebar_width));
 
         let root_key = storage::project_root_key();
         let session_state = match root_key.as_deref() {
@@ -618,6 +619,7 @@ impl App {
         let mut app = Self {
             running: true,
             dirty: true,
+            config,
             request: RequestState::new(),
             focus: FocusState::default(),
             response: ResponseStatus::Empty,
@@ -678,8 +680,78 @@ impl App {
             }
         }
 
+        app.apply_editor_tab_size();
         app.persist_ui_state();
         Ok(app)
+    }
+
+    fn apply_editor_tab_size(&mut self) {
+        let tab = self.config.editor.tab_size;
+        self.request.url_editor.set_tab_length(tab);
+        self.request.headers_editor.set_tab_length(tab);
+        self.request.body_editor.set_tab_length(tab);
+    }
+
+    fn build_client(config: &Config) -> Result<Client> {
+        use reqwest::redirect::Policy;
+
+        let mut builder = Client::builder();
+
+        // Timeout (0 = no timeout, so we simply don't set one)
+        if config.http.timeout > 0 {
+            builder = builder.timeout(Duration::from_secs(config.http.timeout));
+        }
+
+        // Redirect policy
+        if config.http.follow_redirects {
+            builder = builder.redirect(Policy::limited(config.http.max_redirects as usize));
+        } else {
+            builder = builder.redirect(Policy::none());
+        }
+
+        // Proxy
+        if let Some(ref proxy_url) = config.proxy.url {
+            let mut proxy = reqwest::Proxy::all(proxy_url)
+                .map_err(|e| anyhow::anyhow!("invalid proxy configuration: {}", e))?;
+            if let Some(ref no_proxy) = config.proxy.no_proxy {
+                let np = reqwest::NoProxy::from_string(no_proxy);
+                proxy = proxy.no_proxy(np);
+            }
+            builder = builder.proxy(proxy);
+        }
+
+        // SSL verification
+        if !config.ssl.verify {
+            builder = builder.danger_accept_invalid_certs(true);
+        }
+
+        // Custom CA certificate
+        if let Some(ref ca_path) = config.ssl.ca_cert {
+            let pem = std::fs::read(ca_path)
+                .map_err(|e| anyhow::anyhow!("failed to read CA cert \"{}\": {}", ca_path.display(), e))?;
+            let cert = reqwest::Certificate::from_pem(&pem)
+                .map_err(|e| anyhow::anyhow!("invalid CA cert \"{}\": {}", ca_path.display(), e))?;
+            builder = builder.add_root_certificate(cert);
+        }
+
+        // Client certificate + key (mutual TLS)
+        if let (Some(ref cert_path), Some(ref key_path)) =
+            (&config.ssl.client_cert, &config.ssl.client_key)
+        {
+            let cert_pem = std::fs::read(cert_path).map_err(|e| {
+                anyhow::anyhow!("failed to read client cert \"{}\": {}", cert_path.display(), e)
+            })?;
+            let key_pem = std::fs::read(key_path).map_err(|e| {
+                anyhow::anyhow!("failed to read client key \"{}\": {}", key_path.display(), e)
+            })?;
+            let identity = reqwest::Identity::from_pkcs8_pem(&cert_pem, &key_pem)
+                .map_err(|e| anyhow::anyhow!("invalid client identity: {}", e))?;
+            builder = builder.identity(identity);
+        }
+
+        builder
+            .build()
+            .map_err(|e| anyhow::anyhow!("failed to build HTTP client: {}", e))
     }
 
     pub async fn run(&mut self) -> Result<()> {
@@ -1016,6 +1088,7 @@ impl App {
                     .and_then(|b| b.raw.clone())
                     .unwrap_or_default();
                 self.request.set_contents(method, url, headers, body);
+                self.apply_editor_tab_size();
                 self.current_request_id = Some(request_id);
                 self.request_dirty = false;
                 self.focus.panel = Panel::Request;
@@ -2659,7 +2732,7 @@ fn collect_request_ids(item: &PostmanItem, out: &mut Vec<Uuid>) {
 }
 
 fn clamp_sidebar_width(value: u16) -> u16 {
-    value.max(28).min(42)
+    value.clamp(28, 60)
 }
 
 fn extract_url(value: &Value) -> String {
