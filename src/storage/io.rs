@@ -56,14 +56,13 @@ pub fn delete_request(id: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::models::HttpMethod;
 
     #[test]
     fn test_save_and_load_request() {
         let request = SavedRequest::new(
             "Test Request".to_string(),
             "https://api.example.com/test".to_string(),
-            HttpMethod::Post,
+            "POST".to_string(),
             "Content-Type: application/json".to_string(),
             r#"{"key": "value"}"#.to_string(),
         );
@@ -77,7 +76,7 @@ mod tests {
         let loaded = load_request(&id).expect("Failed to load request");
         assert_eq!(loaded.name, "Test Request");
         assert_eq!(loaded.url, "https://api.example.com/test");
-        assert_eq!(loaded.method, HttpMethod::Post);
+        assert_eq!(loaded.method, "POST");
 
         // List
         let all = list_requests().expect("Failed to list requests");
