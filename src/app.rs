@@ -282,6 +282,123 @@ pub enum AuthField {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BodyMode {
+    #[default]
+    Raw,
+    Json,
+    Xml,
+    FormUrlEncoded,
+    Multipart,
+    Binary,
+}
+
+impl BodyMode {
+    pub const ALL: [BodyMode; 6] = [
+        BodyMode::Raw,
+        BodyMode::Json,
+        BodyMode::Xml,
+        BodyMode::FormUrlEncoded,
+        BodyMode::Multipart,
+        BodyMode::Binary,
+    ];
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            BodyMode::Raw => "Raw",
+            BodyMode::Json => "JSON",
+            BodyMode::Xml => "XML",
+            BodyMode::FormUrlEncoded => "Form URL-Encoded",
+            BodyMode::Multipart => "Multipart Form",
+            BodyMode::Binary => "Binary",
+        }
+    }
+
+    pub fn from_index(index: usize) -> Self {
+        Self::ALL[index % Self::ALL.len()]
+    }
+
+    pub fn index(&self) -> usize {
+        match self {
+            BodyMode::Raw => 0,
+            BodyMode::Json => 1,
+            BodyMode::Xml => 2,
+            BodyMode::FormUrlEncoded => 3,
+            BodyMode::Multipart => 4,
+            BodyMode::Binary => 5,
+        }
+    }
+
+    pub fn is_text_mode(&self) -> bool {
+        matches!(self, BodyMode::Raw | BodyMode::Json | BodyMode::Xml)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct KvPair {
+    pub key: String,
+    pub value: String,
+    pub enabled: bool,
+}
+
+impl KvPair {
+    pub fn new_empty() -> Self {
+        Self {
+            key: String::new(),
+            value: String::new(),
+            enabled: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MultipartFieldType {
+    #[default]
+    Text,
+    File,
+}
+
+#[derive(Debug, Clone)]
+pub struct MultipartField {
+    pub key: String,
+    pub value: String,
+    pub field_type: MultipartFieldType,
+    pub enabled: bool,
+}
+
+impl MultipartField {
+    pub fn new_empty() -> Self {
+        Self {
+            key: String::new(),
+            value: String::new(),
+            field_type: MultipartFieldType::Text,
+            enabled: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BodyField {
+    #[default]
+    ModeSelector,
+    TextEditor,
+    KvRow,
+    BinaryPath,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KvColumn {
+    #[default]
+    Key,
+    Value,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct KvFocus {
+    pub row: usize,
+    pub column: KvColumn,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[allow(dead_code)]
 pub enum Panel {
     Sidebar,
@@ -306,6 +423,8 @@ pub struct FocusState {
     pub panel: Panel,
     pub request_field: RequestField,
     pub auth_field: AuthField,
+    pub body_field: BodyField,
+    pub kv_focus: KvFocus,
 }
 
 #[derive(Debug, Clone)]
@@ -417,6 +536,10 @@ pub struct RequestState {
     pub url_editor: TextArea<'static>,
     pub headers_editor: TextArea<'static>,
     pub body_editor: TextArea<'static>,
+    pub body_mode: BodyMode,
+    pub body_form_pairs: Vec<KvPair>,
+    pub body_multipart_fields: Vec<MultipartField>,
+    pub body_binary_path_editor: TextArea<'static>,
     pub auth_type: AuthType,
     pub api_key_location: ApiKeyLocation,
     pub auth_token_editor: TextArea<'static>,
@@ -444,6 +567,9 @@ impl RequestState {
         let mut body_editor = TextArea::default();
         configure_editor(&mut body_editor, "Request body...");
 
+        let mut body_binary_path_editor = TextArea::default();
+        configure_editor(&mut body_binary_path_editor, "File path...");
+
         let mut auth_token_editor = TextArea::default();
         configure_editor(&mut auth_token_editor, "Token");
 
@@ -464,6 +590,10 @@ impl RequestState {
             url_editor,
             headers_editor,
             body_editor,
+            body_mode: BodyMode::Raw,
+            body_form_pairs: vec![KvPair::new_empty()],
+            body_multipart_fields: vec![MultipartField::new_empty()],
+            body_binary_path_editor,
             auth_type: AuthType::NoAuth,
             api_key_location: ApiKeyLocation::Header,
             auth_token_editor,
@@ -523,6 +653,10 @@ impl RequestState {
 
     pub fn body_text(&self) -> String {
         self.body_editor.lines().join("\n")
+    }
+
+    pub fn body_binary_path_text(&self) -> String {
+        self.body_binary_path_editor.lines().join("")
     }
 
     pub fn auth_token_text(&self) -> String {
@@ -685,6 +819,9 @@ pub struct App {
     pub active_environment_name: Option<String>,
     pub show_env_popup: bool,
     pub env_popup_index: usize,
+    pub show_body_mode_popup: bool,
+    pub body_mode_popup_index: usize,
+    pub kv_edit_textarea: Option<TextArea<'static>>,
 }
 
 impl App {
@@ -869,6 +1006,9 @@ impl App {
             active_environment_name: None,
             show_env_popup: false,
             env_popup_index: 0,
+            show_body_mode_popup: false,
+            body_mode_popup_index: 0,
+            kv_edit_textarea: None,
         };
 
         if let Some(request_id) = created_request_id {
