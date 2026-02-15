@@ -2,11 +2,11 @@ use std::time::Instant;
 
 use reqwest::Client;
 
-use crate::app::{HttpMethod, ResponseData};
+use crate::app::{HttpMethod, Method, ResponseData};
 
 pub async fn send_request(
     client: &Client,
-    method: HttpMethod,
+    method: &Method,
     url: &str,
     headers: &str,
     body: &str,
@@ -14,13 +14,20 @@ pub async fn send_request(
     let start = Instant::now();
 
     let mut builder = match method {
-        HttpMethod::Get => client.get(url),
-        HttpMethod::Post => client.post(url),
-        HttpMethod::Put => client.put(url),
-        HttpMethod::Patch => client.patch(url),
-        HttpMethod::Delete => client.delete(url),
-        HttpMethod::Head => client.head(url),
-        HttpMethod::Options => client.request(reqwest::Method::OPTIONS, url),
+        Method::Standard(m) => match m {
+            HttpMethod::Get => client.get(url),
+            HttpMethod::Post => client.post(url),
+            HttpMethod::Put => client.put(url),
+            HttpMethod::Patch => client.patch(url),
+            HttpMethod::Delete => client.delete(url),
+            HttpMethod::Head => client.head(url),
+            HttpMethod::Options => client.request(reqwest::Method::OPTIONS, url),
+        },
+        Method::Custom(s) => {
+            let method = reqwest::Method::from_bytes(s.as_bytes())
+                .map_err(|e| format!("Invalid HTTP method '{}': {}", s, e))?;
+            client.request(method, url)
+        }
     };
 
     for line in headers.lines() {
@@ -31,16 +38,22 @@ pub async fn send_request(
         if let Some((key, value)) = line.split_once(':') {
             builder = builder.header(key.trim(), value.trim());
         } else {
-            return Err(format!("Invalid header format: '{}' (expected 'Key: Value')", line));
+            return Err(format!(
+                "Invalid header format: '{}' (expected 'Key: Value')",
+                line
+            ));
         }
     }
 
-    if !body.is_empty()
-        && matches!(
-            method,
+    let sends_body = match method {
+        Method::Standard(m) => matches!(
+            m,
             HttpMethod::Post | HttpMethod::Put | HttpMethod::Patch | HttpMethod::Delete
-        )
-    {
+        ),
+        Method::Custom(_) => true,
+    };
+
+    if !body.is_empty() && sends_body {
         builder = builder.body(body.to_string());
     }
 

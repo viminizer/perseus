@@ -12,7 +12,7 @@ pub use collection::{
     parse_headers, CollectionStore, NodeKind, ProjectInfo, ProjectTree, RequestFile, TreeNode,
 };
 pub use postman::{PostmanHeader, PostmanItem, PostmanRequest};
-pub use models::{HttpMethod, SavedRequest};
+pub use models::SavedRequest;
 pub use project::{
     collection_path, ensure_storage_dir, find_project_root, project_root_key, requests_dir,
     storage_dir, ui_state_path,

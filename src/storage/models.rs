@@ -1,52 +1,11 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "UPPERCASE")]
-pub enum HttpMethod {
-    #[default]
-    Get,
-    Post,
-    Put,
-    Patch,
-    Delete,
-    Head,
-    Options,
-}
-
-impl From<crate::app::HttpMethod> for HttpMethod {
-    fn from(method: crate::app::HttpMethod) -> Self {
-        match method {
-            crate::app::HttpMethod::Get => HttpMethod::Get,
-            crate::app::HttpMethod::Post => HttpMethod::Post,
-            crate::app::HttpMethod::Put => HttpMethod::Put,
-            crate::app::HttpMethod::Patch => HttpMethod::Patch,
-            crate::app::HttpMethod::Delete => HttpMethod::Delete,
-            crate::app::HttpMethod::Head => HttpMethod::Head,
-            crate::app::HttpMethod::Options => HttpMethod::Options,
-        }
-    }
-}
-
-impl From<HttpMethod> for crate::app::HttpMethod {
-    fn from(method: HttpMethod) -> Self {
-        match method {
-            HttpMethod::Get => crate::app::HttpMethod::Get,
-            HttpMethod::Post => crate::app::HttpMethod::Post,
-            HttpMethod::Put => crate::app::HttpMethod::Put,
-            HttpMethod::Patch => crate::app::HttpMethod::Patch,
-            HttpMethod::Delete => crate::app::HttpMethod::Delete,
-            HttpMethod::Head => crate::app::HttpMethod::Head,
-            HttpMethod::Options => crate::app::HttpMethod::Options,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedRequest {
     pub id: String,
     pub name: String,
     pub url: String,
-    pub method: HttpMethod,
+    pub method: String,
     pub headers: String,
     pub body: String,
 }
@@ -55,7 +14,7 @@ impl SavedRequest {
     pub fn new(
         name: String,
         url: String,
-        method: HttpMethod,
+        method: String,
         headers: String,
         body: String,
     ) -> Self {
@@ -74,7 +33,7 @@ impl SavedRequest {
         Self::new(
             name,
             request.url_text(),
-            request.method.into(),
+            request.method.as_str().to_string(),
             request.headers_text(),
             request.body_text(),
         )

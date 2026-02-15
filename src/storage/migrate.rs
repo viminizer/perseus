@@ -1,6 +1,6 @@
 use std::fs;
 
-use crate::storage::models::{HttpMethod, SavedRequest};
+use crate::storage::models::SavedRequest;
 use crate::storage::postman::{PostmanCollection, PostmanItem, PostmanRequest};
 use crate::storage::project::requests_dir;
 
@@ -37,16 +37,7 @@ pub fn migrate_legacy(
     let mut project = PostmanItem::new_folder(project_name);
 
     for request in requests {
-        let method = match request.method {
-            HttpMethod::Get => "GET",
-            HttpMethod::Post => "POST",
-            HttpMethod::Put => "PUT",
-            HttpMethod::Patch => "PATCH",
-            HttpMethod::Delete => "DELETE",
-            HttpMethod::Head => "HEAD",
-            HttpMethod::Options => "OPTIONS",
-        }
-        .to_string();
+        let method = request.method.clone();
 
         let headers = parse_headers(&request.headers);
         let body = if request.body.trim().is_empty() {

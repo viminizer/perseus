@@ -13,7 +13,7 @@ use tui_textarea::TextArea;
 use unicode_width::UnicodeWidthChar;
 
 use crate::app::{
-    App, AppMode, HttpMethod, Panel, RequestField, RequestTab, ResponseBodyRenderCache,
+    App, AppMode, HttpMethod, Method, Panel, RequestField, RequestTab, ResponseBodyRenderCache,
     ResponseHeadersRenderCache, ResponseStatus, ResponseTab, SidebarPopup, WrapCache,
 };
 use crate::perf;
@@ -118,7 +118,7 @@ fn render_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
 
                 match item.kind {
                     NodeKind::Request => {
-                        if let Some(method) = item.method {
+                        if let Some(ref method) = item.method {
                             let method_style = base_style.fg(method_color(method));
                             push_span(
                                 method.as_str().to_string(),
@@ -262,8 +262,9 @@ fn render_input_line(input: &crate::app::TextInput) -> Line<'static> {
 }
 
 fn render_method_popup(frame: &mut Frame, app: &App, method_area: Rect) {
+    let popup_item_count = HttpMethod::ALL.len() + 1; // 7 standard + "Custom..."
     let width: u16 = 15;
-    let height: u16 = HttpMethod::ALL.len() as u16 + 2;
+    let height: u16 = popup_item_count as u16 + 2;
     let x = method_area.x;
     let y = method_area.y + method_area.height;
     let popup_area = Rect::new(x, y, width, height);
@@ -278,11 +279,12 @@ fn render_method_popup(frame: &mut Frame, app: &App, method_area: Rect) {
     let inner = popup_block.inner(popup_area);
     frame.render_widget(popup_block, popup_area);
 
-    let lines: Vec<Line> = HttpMethod::ALL
+    let mut lines: Vec<Line> = HttpMethod::ALL
         .iter()
         .enumerate()
         .map(|(i, method)| {
-            let color = method_color(*method);
+            let m = Method::Standard(*method);
+            let color = method_color(&m);
             let is_selected = i == app.method_popup_index;
             let style = if is_selected {
                 Style::default().fg(Color::Black).bg(color)
@@ -293,6 +295,31 @@ fn render_method_popup(frame: &mut Frame, app: &App, method_area: Rect) {
         })
         .collect();
 
+    // "Custom..." entry or inline text input
+    let custom_index = HttpMethod::ALL.len();
+    let is_custom_selected = app.method_popup_index == custom_index;
+
+    if app.method_popup_custom_mode {
+        let input_text = format!(" {}_ ", app.method_custom_input);
+        let style = Style::default()
+            .fg(Color::White)
+            .bg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD);
+        lines.push(Line::from(Span::styled(input_text, style)));
+    } else {
+        let style = if is_custom_selected {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC)
+        } else {
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC)
+        };
+        lines.push(Line::from(Span::styled(" Custom... ", style)));
+    }
+
     let list = Paragraph::new(lines);
     frame.render_widget(list, inner);
 }
@@ -301,27 +328,38 @@ fn is_field_focused(app: &App, field: RequestField) -> bool {
     app.focus.panel == Panel::Request && app.focus.request_field == field
 }
 
-fn method_color(method: HttpMethod) -> Color {
+fn method_color(method: &Method) -> Color {
     match method {
-        HttpMethod::Get => Color::Green,
-        HttpMethod::Post => Color::Blue,
-        HttpMethod::Put => Color::Yellow,
-        HttpMethod::Patch => Color::Magenta,
-        HttpMethod::Delete => Color::Red,
-        HttpMethod::Head => Color::Cyan,
-        HttpMethod::Options => Color::White,
+        Method::Standard(m) => match m {
+            HttpMethod::Get => Color::Green,
+            HttpMethod::Post => Color::Blue,
+            HttpMethod::Put => Color::Yellow,
+            HttpMethod::Patch => Color::Magenta,
+            HttpMethod::Delete => Color::Red,
+            HttpMethod::Head => Color::Cyan,
+            HttpMethod::Options => Color::White,
+        },
+        Method::Custom(_) => Color::DarkGray,
     }
 }
 
 fn render_request_input_row(frame: &mut Frame, app: &App, layout: &RequestInputLayout) {
     // Render Method box with method-specific color
     let method_focused = is_field_focused(app, RequestField::Method);
-    let method_col = method_color(app.request.method);
+    let method_col = method_color(&app.request.method);
     let method_border = if method_focused { Color::Green } else { Color::DarkGray };
     let method_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(method_border));
-    let method_text = Paragraph::new(Line::from(app.request.method.as_str()))
+    // Truncate method display to fit area (inner width minus padding)
+    let display_str = app.request.method.as_str();
+    let max_width = layout.method_area.width.saturating_sub(2) as usize; // account for border
+    let display = if display_str.len() > max_width {
+        format!("{}\u{2026}", &display_str[..max_width.saturating_sub(1)])
+    } else {
+        display_str.to_string()
+    };
+    let method_text = Paragraph::new(Line::from(display))
         .style(Style::default().fg(method_col))
         .alignment(Alignment::Center)
         .block(method_block);
