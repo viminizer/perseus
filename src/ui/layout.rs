@@ -95,6 +95,26 @@ impl RequestLayout {
     }
 }
 
+pub struct BodyLayout {
+    pub mode_selector_area: Rect,
+    pub content_area: Rect,
+}
+
+impl BodyLayout {
+    pub fn new(area: Rect) -> Self {
+        let chunks = Layout::vertical([
+            Constraint::Length(1), // Mode selector
+            Constraint::Min(3),   // Content
+        ])
+        .split(area);
+
+        Self {
+            mode_selector_area: chunks[0],
+            content_area: chunks[1],
+        }
+    }
+}
+
 pub struct ResponseLayout {
     pub tab_area: Rect,
     pub spacer_area: Rect,

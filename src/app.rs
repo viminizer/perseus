@@ -282,6 +282,123 @@ pub enum AuthField {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BodyMode {
+    #[default]
+    Raw,
+    Json,
+    Xml,
+    FormUrlEncoded,
+    Multipart,
+    Binary,
+}
+
+impl BodyMode {
+    pub const ALL: [BodyMode; 6] = [
+        BodyMode::Raw,
+        BodyMode::Json,
+        BodyMode::Xml,
+        BodyMode::FormUrlEncoded,
+        BodyMode::Multipart,
+        BodyMode::Binary,
+    ];
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            BodyMode::Raw => "Raw",
+            BodyMode::Json => "JSON",
+            BodyMode::Xml => "XML",
+            BodyMode::FormUrlEncoded => "Form URL-Encoded",
+            BodyMode::Multipart => "Multipart Form",
+            BodyMode::Binary => "Binary",
+        }
+    }
+
+    pub fn from_index(index: usize) -> Self {
+        Self::ALL[index % Self::ALL.len()]
+    }
+
+    pub fn index(&self) -> usize {
+        match self {
+            BodyMode::Raw => 0,
+            BodyMode::Json => 1,
+            BodyMode::Xml => 2,
+            BodyMode::FormUrlEncoded => 3,
+            BodyMode::Multipart => 4,
+            BodyMode::Binary => 5,
+        }
+    }
+
+    pub fn is_text_mode(&self) -> bool {
+        matches!(self, BodyMode::Raw | BodyMode::Json | BodyMode::Xml)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct KvPair {
+    pub key: String,
+    pub value: String,
+    pub enabled: bool,
+}
+
+impl KvPair {
+    pub fn new_empty() -> Self {
+        Self {
+            key: String::new(),
+            value: String::new(),
+            enabled: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MultipartFieldType {
+    #[default]
+    Text,
+    File,
+}
+
+#[derive(Debug, Clone)]
+pub struct MultipartField {
+    pub key: String,
+    pub value: String,
+    pub field_type: MultipartFieldType,
+    pub enabled: bool,
+}
+
+impl MultipartField {
+    pub fn new_empty() -> Self {
+        Self {
+            key: String::new(),
+            value: String::new(),
+            field_type: MultipartFieldType::Text,
+            enabled: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BodyField {
+    #[default]
+    ModeSelector,
+    TextEditor,
+    KvRow,
+    BinaryPath,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KvColumn {
+    #[default]
+    Key,
+    Value,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct KvFocus {
+    pub row: usize,
+    pub column: KvColumn,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[allow(dead_code)]
 pub enum Panel {
     Sidebar,
@@ -306,6 +423,8 @@ pub struct FocusState {
     pub panel: Panel,
     pub request_field: RequestField,
     pub auth_field: AuthField,
+    pub body_field: BodyField,
+    pub kv_focus: KvFocus,
 }
 
 #[derive(Debug, Clone)]
@@ -417,6 +536,10 @@ pub struct RequestState {
     pub url_editor: TextArea<'static>,
     pub headers_editor: TextArea<'static>,
     pub body_editor: TextArea<'static>,
+    pub body_mode: BodyMode,
+    pub body_form_pairs: Vec<KvPair>,
+    pub body_multipart_fields: Vec<MultipartField>,
+    pub body_binary_path_editor: TextArea<'static>,
     pub auth_type: AuthType,
     pub api_key_location: ApiKeyLocation,
     pub auth_token_editor: TextArea<'static>,
@@ -444,6 +567,9 @@ impl RequestState {
         let mut body_editor = TextArea::default();
         configure_editor(&mut body_editor, "Request body...");
 
+        let mut body_binary_path_editor = TextArea::default();
+        configure_editor(&mut body_binary_path_editor, "File path...");
+
         let mut auth_token_editor = TextArea::default();
         configure_editor(&mut auth_token_editor, "Token");
 
@@ -464,6 +590,10 @@ impl RequestState {
             url_editor,
             headers_editor,
             body_editor,
+            body_mode: BodyMode::Raw,
+            body_form_pairs: vec![KvPair::new_empty()],
+            body_multipart_fields: vec![MultipartField::new_empty()],
+            body_binary_path_editor,
             auth_type: AuthType::NoAuth,
             api_key_location: ApiKeyLocation::Header,
             auth_token_editor,
@@ -495,6 +625,13 @@ impl RequestState {
         self.body_editor = TextArea::new(body_lines);
         configure_editor(&mut self.body_editor, "Request body...");
 
+        // Reset body mode fields
+        self.body_mode = BodyMode::Raw;
+        self.body_form_pairs = vec![KvPair::new_empty()];
+        self.body_multipart_fields = vec![MultipartField::new_empty()];
+        self.body_binary_path_editor = TextArea::default();
+        configure_editor(&mut self.body_binary_path_editor, "File path...");
+
         self.reset_auth();
     }
 
@@ -523,6 +660,80 @@ impl RequestState {
 
     pub fn body_text(&self) -> String {
         self.body_editor.lines().join("\n")
+    }
+
+    pub fn body_binary_path_text(&self) -> String {
+        self.body_binary_path_editor.lines().join("")
+    }
+
+    pub fn build_body_content(&self) -> http::BodyContent {
+        match self.body_mode {
+            BodyMode::Raw => {
+                let text = self.body_text();
+                if text.trim().is_empty() {
+                    http::BodyContent::None
+                } else {
+                    http::BodyContent::Raw(text)
+                }
+            }
+            BodyMode::Json => {
+                let text = self.body_text();
+                if text.trim().is_empty() {
+                    http::BodyContent::None
+                } else {
+                    http::BodyContent::Json(text)
+                }
+            }
+            BodyMode::Xml => {
+                let text = self.body_text();
+                if text.trim().is_empty() {
+                    http::BodyContent::None
+                } else {
+                    http::BodyContent::Xml(text)
+                }
+            }
+            BodyMode::FormUrlEncoded => {
+                let pairs: Vec<(String, String)> = self
+                    .body_form_pairs
+                    .iter()
+                    .filter(|p| p.enabled && !(p.key.is_empty() && p.value.is_empty()))
+                    .map(|p| (p.key.clone(), p.value.clone()))
+                    .collect();
+                if pairs.is_empty() {
+                    http::BodyContent::None
+                } else {
+                    http::BodyContent::FormUrlEncoded(pairs)
+                }
+            }
+            BodyMode::Multipart => {
+                let parts: Vec<http::MultipartPart> = self
+                    .body_multipart_fields
+                    .iter()
+                    .filter(|f| f.enabled && !f.key.is_empty())
+                    .map(|f| http::MultipartPart {
+                        key: f.key.clone(),
+                        value: f.value.clone(),
+                        field_type: match f.field_type {
+                            MultipartFieldType::Text => http::MultipartPartType::Text,
+                            MultipartFieldType::File => http::MultipartPartType::File,
+                        },
+                    })
+                    .collect();
+                if parts.is_empty() {
+                    http::BodyContent::None
+                } else {
+                    http::BodyContent::Multipart(parts)
+                }
+            }
+            BodyMode::Binary => {
+                let path = self.body_binary_path_text();
+                if path.trim().is_empty() {
+                    http::BodyContent::None
+                } else {
+                    http::BodyContent::Binary(path)
+                }
+            }
+        }
     }
 
     pub fn auth_token_text(&self) -> String {
@@ -563,11 +774,19 @@ impl RequestState {
         }
     }
 
-    pub fn active_editor(&mut self, field: RequestField) -> Option<&mut TextArea<'static>> {
+    pub fn active_editor(
+        &mut self,
+        field: RequestField,
+        body_field: BodyField,
+    ) -> Option<&mut TextArea<'static>> {
         match field {
             RequestField::Url => Some(&mut self.url_editor),
             RequestField::Headers => Some(&mut self.headers_editor),
-            RequestField::Body => Some(&mut self.body_editor),
+            RequestField::Body => match body_field {
+                BodyField::TextEditor => Some(&mut self.body_editor),
+                BodyField::BinaryPath => Some(&mut self.body_binary_path_editor),
+                _ => None,
+            },
             RequestField::Method | RequestField::Send | RequestField::Auth => None,
         }
     }
@@ -685,6 +904,9 @@ pub struct App {
     pub active_environment_name: Option<String>,
     pub show_env_popup: bool,
     pub env_popup_index: usize,
+    pub show_body_mode_popup: bool,
+    pub body_mode_popup_index: usize,
+    pub kv_edit_textarea: Option<TextArea<'static>>,
 }
 
 impl App {
@@ -869,6 +1091,9 @@ impl App {
             active_environment_name: None,
             show_env_popup: false,
             env_popup_index: 0,
+            show_body_mode_popup: false,
+            body_mode_popup_index: 0,
+            kv_edit_textarea: None,
         };
 
         if let Some(request_id) = created_request_id {
@@ -1285,12 +1510,91 @@ impl App {
         let method = self.request.method.as_str().to_string();
         let url = self.request.url_text();
         let headers = storage::parse_headers(&self.request.headers_text());
-        let body_raw = self.request.body_text();
-        let body = if body_raw.trim().is_empty() {
-            None
-        } else {
-            Some(body_raw)
+
+        let body = match self.request.body_mode {
+            BodyMode::Raw => {
+                let text = self.request.body_text();
+                if text.trim().is_empty() {
+                    None
+                } else {
+                    Some(storage::PostmanBody::raw(&text))
+                }
+            }
+            BodyMode::Json => {
+                let text = self.request.body_text();
+                if text.trim().is_empty() {
+                    None
+                } else {
+                    Some(storage::PostmanBody::json(&text))
+                }
+            }
+            BodyMode::Xml => {
+                let text = self.request.body_text();
+                if text.trim().is_empty() {
+                    None
+                } else {
+                    Some(storage::PostmanBody::xml(&text))
+                }
+            }
+            BodyMode::FormUrlEncoded => {
+                let pairs: Vec<storage::PostmanKvPair> = self
+                    .request
+                    .body_form_pairs
+                    .iter()
+                    .filter(|p| !(p.key.is_empty() && p.value.is_empty()))
+                    .map(|p| storage::PostmanKvPair {
+                        key: p.key.clone(),
+                        value: p.value.clone(),
+                        disabled: if p.enabled { None } else { Some(true) },
+                    })
+                    .collect();
+                if pairs.is_empty() {
+                    None
+                } else {
+                    Some(storage::PostmanBody::urlencoded(pairs))
+                }
+            }
+            BodyMode::Multipart => {
+                let params: Vec<storage::PostmanFormParam> = self
+                    .request
+                    .body_multipart_fields
+                    .iter()
+                    .filter(|f| !f.key.is_empty())
+                    .map(|f| storage::PostmanFormParam {
+                        key: f.key.clone(),
+                        value: if f.field_type == MultipartFieldType::Text {
+                            Some(f.value.clone())
+                        } else {
+                            None
+                        },
+                        src: if f.field_type == MultipartFieldType::File {
+                            Some(f.value.clone())
+                        } else {
+                            None
+                        },
+                        param_type: match f.field_type {
+                            MultipartFieldType::Text => "text".to_string(),
+                            MultipartFieldType::File => "file".to_string(),
+                        },
+                        disabled: if f.enabled { None } else { Some(true) },
+                    })
+                    .collect();
+                if params.is_empty() {
+                    None
+                } else {
+                    Some(storage::PostmanBody::formdata(params))
+                }
+            }
+            BodyMode::Binary => {
+                let path = self.request.body_binary_path_text();
+                if path.trim().is_empty() {
+                    None
+                } else {
+                    Some(storage::PostmanBody::file(&path))
+                }
+            }
         };
+
         let auth = match self.request.auth_type {
             AuthType::NoAuth => None,
             AuthType::Bearer => {
@@ -1310,7 +1614,9 @@ impl App {
                 },
             )),
         };
-        let mut req = PostmanRequest::new(method, url, headers, body);
+
+        let mut req = PostmanRequest::new(method, url, headers, None);
+        req.body = body;
         req.auth = auth;
         req
     }
@@ -1325,18 +1631,115 @@ impl App {
             let method = Method::from_str(&request.method);
             let url = extract_url(&request.url);
             let headers = headers_to_text(&request.header);
-            let body = request
+            let raw_body = request
                 .body
                 .as_ref()
                 .and_then(|b| b.raw.clone())
                 .unwrap_or_default();
-            self.request.set_contents(method, url, headers, body);
+            self.request.set_contents(method, url, headers, raw_body);
+            self.load_body_mode_from_postman(&request);
             self.load_auth_from_postman(&request);
             self.apply_editor_tab_size();
             self.current_request_id = Some(request_id);
             self.request_dirty = false;
+            self.kv_edit_textarea = None;
             self.focus.panel = Panel::Request;
             self.focus.request_field = RequestField::Url;
+            self.focus.body_field = BodyField::ModeSelector;
+            self.focus.kv_focus = KvFocus::default();
+        }
+    }
+
+    fn load_body_mode_from_postman(&mut self, request: &PostmanRequest) {
+        if let Some(body) = &request.body {
+            match body.mode.as_str() {
+                "raw" => {
+                    let language = body
+                        .options
+                        .as_ref()
+                        .and_then(|o| o.raw.as_ref())
+                        .map(|r| r.language.as_str());
+                    self.request.body_mode = match language {
+                        Some("json") => BodyMode::Json,
+                        Some("xml") => BodyMode::Xml,
+                        _ => BodyMode::Raw,
+                    };
+                    // Raw text is already loaded by set_contents above
+                }
+                "urlencoded" => {
+                    self.request.body_mode = BodyMode::FormUrlEncoded;
+                    if let Some(pairs) = &body.urlencoded {
+                        self.request.body_form_pairs = pairs
+                            .iter()
+                            .map(|p| KvPair {
+                                key: p.key.clone(),
+                                value: p.value.clone(),
+                                enabled: !p.disabled.unwrap_or(false),
+                            })
+                            .collect();
+                    }
+                    if self.request.body_form_pairs.is_empty()
+                        || self
+                            .request
+                            .body_form_pairs
+                            .last()
+                            .map(|p| !p.key.is_empty() || !p.value.is_empty())
+                            .unwrap_or(true)
+                    {
+                        self.request.body_form_pairs.push(KvPair::new_empty());
+                    }
+                }
+                "formdata" => {
+                    self.request.body_mode = BodyMode::Multipart;
+                    if let Some(params) = &body.formdata {
+                        self.request.body_multipart_fields = params
+                            .iter()
+                            .map(|p| MultipartField {
+                                key: p.key.clone(),
+                                value: match p.param_type.as_str() {
+                                    "file" => p.src.clone().unwrap_or_default(),
+                                    _ => p.value.clone().unwrap_or_default(),
+                                },
+                                field_type: match p.param_type.as_str() {
+                                    "file" => MultipartFieldType::File,
+                                    _ => MultipartFieldType::Text,
+                                },
+                                enabled: !p.disabled.unwrap_or(false),
+                            })
+                            .collect();
+                    }
+                    if self.request.body_multipart_fields.is_empty()
+                        || self
+                            .request
+                            .body_multipart_fields
+                            .last()
+                            .map(|f| !f.key.is_empty())
+                            .unwrap_or(true)
+                    {
+                        self.request
+                            .body_multipart_fields
+                            .push(MultipartField::new_empty());
+                    }
+                }
+                "file" => {
+                    self.request.body_mode = BodyMode::Binary;
+                    if let Some(file_ref) = &body.file {
+                        if let Some(src) = &file_ref.src {
+                            self.request.body_binary_path_editor =
+                                TextArea::new(vec![src.clone()]);
+                            configure_editor(
+                                &mut self.request.body_binary_path_editor,
+                                "File path...",
+                            );
+                        }
+                    }
+                }
+                _ => {
+                    self.request.body_mode = BodyMode::Raw;
+                }
+            }
+        } else {
+            self.request.body_mode = BodyMode::Raw;
         }
     }
 
@@ -2197,12 +2600,45 @@ impl App {
         };
         self.request.headers_editor.set_cursor_style(cursor_style);
 
-        let cursor_style = if is_editing && body_focused {
+        // Body editors — prepare based on body mode and sub-field
+        let body_text_focused = body_focused
+            && self.focus.body_field == BodyField::TextEditor
+            && self.request.body_mode.is_text_mode();
+        let body_binary_focused = body_focused
+            && self.focus.body_field == BodyField::BinaryPath
+            && self.request.body_mode == BodyMode::Binary;
+
+        self.request
+            .body_editor
+            .set_block(Block::default().borders(Borders::NONE));
+        let cursor_style = if is_editing && body_text_focused {
             self.vim_cursor_style()
         } else {
             Style::default().fg(Color::DarkGray)
         };
         self.request.body_editor.set_cursor_style(cursor_style);
+
+        self.request
+            .body_binary_path_editor
+            .set_block(Block::default().borders(Borders::NONE));
+        let cursor_style = if is_editing && body_binary_focused {
+            self.vim_cursor_style()
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        self.request
+            .body_binary_path_editor
+            .set_cursor_style(cursor_style);
+
+        // KV cell edit textarea — update cursor style when active
+        let kv_cursor_style = if is_editing && body_focused && self.focus.body_field == BodyField::KvRow {
+            self.vim_cursor_style()
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        if let Some(ref mut kv_textarea) = self.kv_edit_textarea {
+            kv_textarea.set_cursor_style(kv_cursor_style);
+        }
 
         // Auth editors — prepare only the ones relevant to current auth type
         self.prepare_auth_editors();
@@ -2434,6 +2870,12 @@ impl App {
             return;
         }
 
+        // Handle body mode popup when open
+        if self.show_body_mode_popup {
+            self.handle_body_mode_popup(key);
+            return;
+        }
+
         // Handle auth type popup when open
         if self.show_auth_type_popup {
             self.handle_auth_type_popup(key);
@@ -2591,6 +3033,7 @@ impl App {
         if key.code == KeyCode::Char('n') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.show_method_popup = false;
             self.show_auth_type_popup = false;
+            self.show_body_mode_popup = false;
             self.show_env_popup = !self.show_env_popup;
             if self.show_env_popup {
                 self.env_popup_index = self
@@ -2639,6 +3082,61 @@ impl App {
                     return;
                 }
                 _ => {}
+            }
+        }
+
+        // Body sub-field navigation
+        if in_request && self.focus.request_field == RequestField::Body {
+            // KV-specific keys when on a KV row
+            if self.focus.body_field == BodyField::KvRow {
+                match key.code {
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        self.next_body_field();
+                        return;
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.prev_body_field();
+                        return;
+                    }
+                    KeyCode::Tab | KeyCode::Char('l') | KeyCode::Right => {
+                        self.kv_next_column();
+                        return;
+                    }
+                    KeyCode::BackTab | KeyCode::Char('h') | KeyCode::Left => {
+                        self.kv_prev_column();
+                        return;
+                    }
+                    KeyCode::Char('a') | KeyCode::Char('o') => {
+                        self.kv_add_row();
+                        return;
+                    }
+                    KeyCode::Char('d') => {
+                        self.kv_delete_row();
+                        return;
+                    }
+                    KeyCode::Char(' ') => {
+                        self.kv_toggle_enabled();
+                        return;
+                    }
+                    KeyCode::Char('t') => {
+                        self.kv_toggle_multipart_type();
+                        return;
+                    }
+                    _ => {}
+                }
+            } else {
+                // Non-KV body fields: j/k navigation
+                match key.code {
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        self.next_body_field();
+                        return;
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.prev_body_field();
+                        return;
+                    }
+                    _ => {}
+                }
             }
         }
 
@@ -2694,8 +3192,11 @@ impl App {
                                 self.send_request(tx);
                             }
                         }
-                        RequestField::Url | RequestField::Headers | RequestField::Body => {
+                        RequestField::Url | RequestField::Headers => {
                             self.enter_editing(VimMode::Normal);
+                        }
+                        RequestField::Body => {
+                            self.handle_body_enter();
                         }
                         RequestField::Auth => {
                             self.handle_auth_enter();
@@ -2711,6 +3212,8 @@ impl App {
             KeyCode::Char('i') => {
                 if in_sidebar {
                     self.app_mode = AppMode::Sidebar;
+                } else if in_request && self.focus.request_field == RequestField::Body {
+                    self.handle_body_enter();
                 } else if in_request && self.is_editable_field() {
                     self.enter_editing(VimMode::Insert);
                 } else if in_request
@@ -2745,6 +3248,7 @@ impl App {
         if key.code == KeyCode::Char('n') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.show_method_popup = false;
             self.show_auth_type_popup = false;
+            self.show_body_mode_popup = false;
             self.show_env_popup = !self.show_env_popup;
             if self.show_env_popup {
                 self.env_popup_index = self
@@ -2808,6 +3312,7 @@ impl App {
         if key.code == KeyCode::Char('n') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.show_method_popup = false;
             self.show_auth_type_popup = false;
+            self.show_body_mode_popup = false;
             self.show_env_popup = !self.show_env_popup;
             if self.show_env_popup {
                 self.env_popup_index = self
@@ -2939,11 +3444,14 @@ impl App {
                     vim.transition_read_only(input, &mut self.response_headers_editor, false)
                 }
             }
+        } else if let Some(textarea) = self.kv_edit_textarea.as_mut() {
+            // KV cell editing — route vim input to the temporary textarea
+            self.vim.transition(input, textarea, true)
         } else {
             let field = self.focus.request_field;
             let single_line = field == RequestField::Url
                 || (field == RequestField::Auth && self.is_auth_text_field());
-            if let Some(textarea) = self.request.active_editor(field) {
+            if let Some(textarea) = self.request.active_editor(field, self.focus.body_field) {
                 self.vim.transition(input, textarea, single_line)
             } else {
                 self.exit_editing();
@@ -2953,6 +3461,7 @@ impl App {
 
         match transition {
             Transition::ExitField => {
+                self.commit_kv_cell_edit();
                 self.exit_editing();
             }
             Transition::Mode(new_mode) => {
@@ -2970,10 +3479,13 @@ impl App {
                         ),
                     };
                     self.vim = new_vim;
+                } else if let Some(textarea) = self.kv_edit_textarea.as_mut() {
+                    self.vim = std::mem::replace(&mut self.vim, Vim::new(VimMode::Normal))
+                        .apply_transition(Transition::Mode(new_mode), textarea);
                 } else {
                     let textarea = self
                         .request
-                        .active_editor(self.focus.request_field)
+                        .active_editor(self.focus.request_field, self.focus.body_field)
                         .unwrap();
                     self.vim = std::mem::replace(&mut self.vim, Vim::new(VimMode::Normal))
                         .apply_transition(Transition::Mode(new_mode), textarea);
@@ -2996,10 +3508,13 @@ impl App {
                         ),
                     };
                     self.vim = new_vim;
+                } else if let Some(textarea) = self.kv_edit_textarea.as_mut() {
+                    self.vim = std::mem::replace(&mut self.vim, Vim::new(VimMode::Normal))
+                        .apply_transition(Transition::Pending(pending_input), textarea);
                 } else {
                     let textarea = self
                         .request
-                        .active_editor(self.focus.request_field)
+                        .active_editor(self.focus.request_field, self.focus.body_field)
                         .unwrap();
                     self.vim = std::mem::replace(&mut self.vim, Vim::new(VimMode::Normal))
                         .apply_transition(Transition::Pending(pending_input), textarea);
@@ -3048,8 +3563,7 @@ impl App {
         let (url, _) = environment::substitute(&raw_url, &variables);
         let (headers, _) =
             environment::substitute(&self.request.headers_text(), &variables);
-        let (body, _) =
-            environment::substitute(&self.request.body_text(), &variables);
+        let body = self.build_resolved_body_content(&variables);
         let auth = self.build_resolved_auth_config(&variables);
 
         self.response = ResponseStatus::Loading;
@@ -3059,7 +3573,7 @@ impl App {
 
         let handle = tokio::spawn(async move {
             let result =
-                http::send_request(&client, &method, &url, &headers, &body, &auth).await;
+                http::send_request(&client, &method, &url, &headers, body, &auth).await;
             let _ = tx.send(result).await;
         });
         self.request_handle = Some(handle.abort_handle());
@@ -3097,6 +3611,90 @@ impl App {
         }
     }
 
+    fn build_resolved_body_content(
+        &self,
+        variables: &std::collections::HashMap<String, String>,
+    ) -> http::BodyContent {
+        match self.request.body_mode {
+            BodyMode::Raw => {
+                let (text, _) = environment::substitute(&self.request.body_text(), variables);
+                if text.trim().is_empty() {
+                    http::BodyContent::None
+                } else {
+                    http::BodyContent::Raw(text)
+                }
+            }
+            BodyMode::Json => {
+                let (text, _) = environment::substitute(&self.request.body_text(), variables);
+                if text.trim().is_empty() {
+                    http::BodyContent::None
+                } else {
+                    http::BodyContent::Json(text)
+                }
+            }
+            BodyMode::Xml => {
+                let (text, _) = environment::substitute(&self.request.body_text(), variables);
+                if text.trim().is_empty() {
+                    http::BodyContent::None
+                } else {
+                    http::BodyContent::Xml(text)
+                }
+            }
+            BodyMode::FormUrlEncoded => {
+                let pairs: Vec<(String, String)> = self
+                    .request
+                    .body_form_pairs
+                    .iter()
+                    .filter(|p| p.enabled && !(p.key.is_empty() && p.value.is_empty()))
+                    .map(|p| {
+                        let (k, _) = environment::substitute(&p.key, variables);
+                        let (v, _) = environment::substitute(&p.value, variables);
+                        (k, v)
+                    })
+                    .collect();
+                if pairs.is_empty() {
+                    http::BodyContent::None
+                } else {
+                    http::BodyContent::FormUrlEncoded(pairs)
+                }
+            }
+            BodyMode::Multipart => {
+                let parts: Vec<http::MultipartPart> = self
+                    .request
+                    .body_multipart_fields
+                    .iter()
+                    .filter(|f| f.enabled && !f.key.is_empty())
+                    .map(|f| {
+                        let (k, _) = environment::substitute(&f.key, variables);
+                        let (v, _) = environment::substitute(&f.value, variables);
+                        http::MultipartPart {
+                            key: k,
+                            value: v,
+                            field_type: match f.field_type {
+                                MultipartFieldType::Text => http::MultipartPartType::Text,
+                                MultipartFieldType::File => http::MultipartPartType::File,
+                            },
+                        }
+                    })
+                    .collect();
+                if parts.is_empty() {
+                    http::BodyContent::None
+                } else {
+                    http::BodyContent::Multipart(parts)
+                }
+            }
+            BodyMode::Binary => {
+                let (path, _) =
+                    environment::substitute(&self.request.body_binary_path_text(), variables);
+                if path.trim().is_empty() {
+                    http::BodyContent::None
+                } else {
+                    http::BodyContent::Binary(path)
+                }
+            }
+        }
+    }
+
     fn cancel_request(&mut self) {
         if let Some(handle) = self.request_handle.take() {
             handle.abort();
@@ -3106,7 +3704,11 @@ impl App {
 
     fn is_editable_field(&self) -> bool {
         match self.focus.request_field {
-            RequestField::Url | RequestField::Headers | RequestField::Body => true,
+            RequestField::Url | RequestField::Headers => true,
+            RequestField::Body => matches!(
+                self.focus.body_field,
+                BodyField::TextEditor | BodyField::BinaryPath
+            ),
             RequestField::Auth => self.is_auth_text_field(),
             _ => false,
         }
@@ -3248,6 +3850,319 @@ impl App {
 
     fn prev_response_tab(&mut self) {
         self.next_response_tab();
+    }
+
+    fn handle_body_mode_popup(&mut self, key: KeyEvent) {
+        let count = BodyMode::ALL.len();
+        match key.code {
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.body_mode_popup_index = (self.body_mode_popup_index + 1) % count;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.body_mode_popup_index = if self.body_mode_popup_index == 0 {
+                    count - 1
+                } else {
+                    self.body_mode_popup_index - 1
+                };
+            }
+            KeyCode::Enter => {
+                self.request.body_mode = BodyMode::from_index(self.body_mode_popup_index);
+                self.show_body_mode_popup = false;
+                self.kv_edit_textarea = None;
+                self.request_dirty = true;
+                // Move focus to the appropriate content field
+                self.focus.body_field = self.content_body_field();
+                if self.focus.body_field == BodyField::KvRow {
+                    self.focus.kv_focus = KvFocus::default();
+                }
+            }
+            KeyCode::Esc => {
+                self.show_body_mode_popup = false;
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_body_enter(&mut self) {
+        match self.focus.body_field {
+            BodyField::ModeSelector => {
+                self.body_mode_popup_index = self.request.body_mode.index();
+                self.show_body_mode_popup = true;
+            }
+            BodyField::TextEditor => {
+                if self.request.body_mode.is_text_mode() {
+                    self.enter_editing(VimMode::Normal);
+                }
+            }
+            BodyField::BinaryPath => {
+                if self.request.body_mode == BodyMode::Binary {
+                    self.enter_editing(VimMode::Normal);
+                }
+            }
+            BodyField::KvRow => {
+                self.start_kv_cell_edit();
+            }
+        }
+    }
+
+    fn next_body_field(&mut self) {
+        match self.focus.body_field {
+            BodyField::ModeSelector => {
+                self.focus.body_field = self.content_body_field();
+                if self.focus.body_field == BodyField::KvRow {
+                    self.focus.kv_focus.row = 0;
+                    self.focus.kv_focus.column = KvColumn::Key;
+                }
+            }
+            BodyField::KvRow => {
+                let row_count = self.kv_row_count();
+                if self.focus.kv_focus.row + 1 < row_count {
+                    self.focus.kv_focus.row += 1;
+                } else {
+                    self.focus.panel = Panel::Response;
+                }
+            }
+            _ => {
+                self.focus.panel = Panel::Response;
+            }
+        }
+    }
+
+    fn prev_body_field(&mut self) {
+        match self.focus.body_field {
+            BodyField::ModeSelector => {
+                self.focus.request_field = RequestField::Url;
+            }
+            BodyField::KvRow => {
+                if self.focus.kv_focus.row > 0 {
+                    self.focus.kv_focus.row -= 1;
+                } else {
+                    self.focus.body_field = BodyField::ModeSelector;
+                }
+            }
+            _ => {
+                self.focus.body_field = BodyField::ModeSelector;
+            }
+        }
+    }
+
+    /// Returns the appropriate BodyField for the current body mode's content area
+    fn content_body_field(&self) -> BodyField {
+        match self.request.body_mode {
+            BodyMode::Raw | BodyMode::Json | BodyMode::Xml => BodyField::TextEditor,
+            BodyMode::FormUrlEncoded | BodyMode::Multipart => BodyField::KvRow,
+            BodyMode::Binary => BodyField::BinaryPath,
+        }
+    }
+
+    fn kv_row_count(&self) -> usize {
+        match self.request.body_mode {
+            BodyMode::FormUrlEncoded => self.request.body_form_pairs.len(),
+            BodyMode::Multipart => self.request.body_multipart_fields.len(),
+            _ => 0,
+        }
+    }
+
+    fn start_kv_cell_edit(&mut self) {
+        let text = self.get_kv_cell_text();
+        let mut textarea = TextArea::new(vec![text]);
+        configure_editor(&mut textarea, "");
+        textarea.set_block(ratatui::widgets::Block::default().borders(ratatui::widgets::Borders::NONE));
+        textarea.set_cursor_style(self.vim_cursor_style());
+        self.kv_edit_textarea = Some(textarea);
+        self.enter_editing(VimMode::Insert);
+    }
+
+    fn get_kv_cell_text(&self) -> String {
+        let row = self.focus.kv_focus.row;
+        let col = self.focus.kv_focus.column;
+        match self.request.body_mode {
+            BodyMode::FormUrlEncoded => {
+                if let Some(pair) = self.request.body_form_pairs.get(row) {
+                    match col {
+                        KvColumn::Key => pair.key.clone(),
+                        KvColumn::Value => pair.value.clone(),
+                    }
+                } else {
+                    String::new()
+                }
+            }
+            BodyMode::Multipart => {
+                if let Some(field) = self.request.body_multipart_fields.get(row) {
+                    match col {
+                        KvColumn::Key => field.key.clone(),
+                        KvColumn::Value => field.value.clone(),
+                    }
+                } else {
+                    String::new()
+                }
+            }
+            _ => String::new(),
+        }
+    }
+
+    fn commit_kv_cell_edit(&mut self) {
+        if let Some(textarea) = self.kv_edit_textarea.take() {
+            let text = textarea.lines().join("");
+            let row = self.focus.kv_focus.row;
+            let col = self.focus.kv_focus.column;
+            match self.request.body_mode {
+                BodyMode::FormUrlEncoded => {
+                    if let Some(pair) = self.request.body_form_pairs.get_mut(row) {
+                        match col {
+                            KvColumn::Key => pair.key = text,
+                            KvColumn::Value => pair.value = text,
+                        }
+                    }
+                    self.ensure_trailing_empty_kv_pair();
+                }
+                BodyMode::Multipart => {
+                    if let Some(field) = self.request.body_multipart_fields.get_mut(row) {
+                        match col {
+                            KvColumn::Key => field.key = text,
+                            KvColumn::Value => field.value = text,
+                        }
+                    }
+                    self.ensure_trailing_empty_multipart_field();
+                }
+                _ => {}
+            }
+            self.request_dirty = true;
+        }
+    }
+
+    fn ensure_trailing_empty_kv_pair(&mut self) {
+        let needs_new = self
+            .request
+            .body_form_pairs
+            .last()
+            .map(|p| !p.key.is_empty() || !p.value.is_empty())
+            .unwrap_or(true);
+        if needs_new {
+            self.request.body_form_pairs.push(KvPair::new_empty());
+        }
+    }
+
+    fn ensure_trailing_empty_multipart_field(&mut self) {
+        let needs_new = self
+            .request
+            .body_multipart_fields
+            .last()
+            .map(|f| !f.key.is_empty())
+            .unwrap_or(true);
+        if needs_new {
+            self.request
+                .body_multipart_fields
+                .push(MultipartField::new_empty());
+        }
+    }
+
+    fn kv_add_row(&mut self) {
+        let row = self.focus.kv_focus.row;
+        match self.request.body_mode {
+            BodyMode::FormUrlEncoded => {
+                self.request
+                    .body_form_pairs
+                    .insert(row + 1, KvPair::new_empty());
+                self.focus.kv_focus.row = row + 1;
+                self.focus.kv_focus.column = KvColumn::Key;
+            }
+            BodyMode::Multipart => {
+                self.request
+                    .body_multipart_fields
+                    .insert(row + 1, MultipartField::new_empty());
+                self.focus.kv_focus.row = row + 1;
+                self.focus.kv_focus.column = KvColumn::Key;
+            }
+            _ => {}
+        }
+        self.request_dirty = true;
+    }
+
+    fn kv_delete_row(&mut self) {
+        let row = self.focus.kv_focus.row;
+        match self.request.body_mode {
+            BodyMode::FormUrlEncoded => {
+                if self.request.body_form_pairs.len() > 1 {
+                    self.request.body_form_pairs.remove(row);
+                    if self.focus.kv_focus.row >= self.request.body_form_pairs.len() {
+                        self.focus.kv_focus.row =
+                            self.request.body_form_pairs.len().saturating_sub(1);
+                    }
+                }
+            }
+            BodyMode::Multipart => {
+                if self.request.body_multipart_fields.len() > 1 {
+                    self.request.body_multipart_fields.remove(row);
+                    if self.focus.kv_focus.row >= self.request.body_multipart_fields.len() {
+                        self.focus.kv_focus.row =
+                            self.request.body_multipart_fields.len().saturating_sub(1);
+                    }
+                }
+            }
+            _ => {}
+        }
+        self.request_dirty = true;
+    }
+
+    fn kv_toggle_enabled(&mut self) {
+        let row = self.focus.kv_focus.row;
+        match self.request.body_mode {
+            BodyMode::FormUrlEncoded => {
+                if let Some(pair) = self.request.body_form_pairs.get_mut(row) {
+                    pair.enabled = !pair.enabled;
+                }
+            }
+            BodyMode::Multipart => {
+                if let Some(field) = self.request.body_multipart_fields.get_mut(row) {
+                    field.enabled = !field.enabled;
+                }
+            }
+            _ => {}
+        }
+        self.request_dirty = true;
+    }
+
+    fn kv_toggle_multipart_type(&mut self) {
+        if self.request.body_mode != BodyMode::Multipart {
+            return;
+        }
+        let row = self.focus.kv_focus.row;
+        if let Some(field) = self.request.body_multipart_fields.get_mut(row) {
+            field.field_type = match field.field_type {
+                MultipartFieldType::Text => MultipartFieldType::File,
+                MultipartFieldType::File => MultipartFieldType::Text,
+            };
+            self.request_dirty = true;
+        }
+    }
+
+    fn kv_next_column(&mut self) {
+        self.focus.kv_focus.column = match self.focus.kv_focus.column {
+            KvColumn::Key => KvColumn::Value,
+            KvColumn::Value => {
+                // Wrap to next row's key
+                let row_count = self.kv_row_count();
+                if self.focus.kv_focus.row + 1 < row_count {
+                    self.focus.kv_focus.row += 1;
+                }
+                KvColumn::Key
+            }
+        };
+    }
+
+    fn kv_prev_column(&mut self) {
+        self.focus.kv_focus.column = match self.focus.kv_focus.column {
+            KvColumn::Value => KvColumn::Key,
+            KvColumn::Key => {
+                if self.focus.kv_focus.row > 0 {
+                    self.focus.kv_focus.row -= 1;
+                    KvColumn::Value
+                } else {
+                    KvColumn::Key
+                }
+            }
+        };
     }
 
     fn handle_auth_type_popup(&mut self, key: KeyEvent) {

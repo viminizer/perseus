@@ -16,7 +16,10 @@ pub use environment::{
     delete_environment_file, load_all_environments, save_environment, Environment,
     EnvironmentVariable,
 };
-pub use postman::{PostmanAuth, PostmanHeader, PostmanItem, PostmanRequest};
+pub use postman::{
+    PostmanAuth, PostmanBody, PostmanFormParam, PostmanHeader, PostmanItem, PostmanKvPair,
+    PostmanRequest,
+};
 pub use models::SavedRequest;
 pub use project::{
     collection_path, ensure_environments_dir, ensure_storage_dir, environments_dir,

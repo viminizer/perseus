@@ -11,12 +11,33 @@ pub enum AuthConfig {
     ApiKey { key: String, value: String, location: ApiKeyLocation },
 }
 
+pub enum BodyContent {
+    None,
+    Raw(String),
+    Json(String),
+    Xml(String),
+    FormUrlEncoded(Vec<(String, String)>),
+    Multipart(Vec<MultipartPart>),
+    Binary(String),
+}
+
+pub struct MultipartPart {
+    pub key: String,
+    pub value: String,
+    pub field_type: MultipartPartType,
+}
+
+pub enum MultipartPartType {
+    Text,
+    File,
+}
+
 pub async fn send_request(
     client: &Client,
     method: &Method,
     url: &str,
     headers: &str,
-    body: &str,
+    body: BodyContent,
     auth: &AuthConfig,
 ) -> Result<ResponseData, String> {
     let start = Instant::now();
@@ -72,9 +93,89 @@ pub async fn send_request(
         Method::Custom(_) => true,
     };
 
-    if !body.is_empty() && sends_body {
-        builder = builder.body(body.to_string());
-    }
+    let has_manual_content_type = headers
+        .lines()
+        .any(|line| line.trim().to_lowercase().starts_with("content-type"));
+
+    builder = match body {
+        BodyContent::None => builder,
+        BodyContent::Raw(text) => {
+            if !text.is_empty() && sends_body {
+                builder.body(text)
+            } else {
+                builder
+            }
+        }
+        BodyContent::Json(text) => {
+            let mut b = builder;
+            if !has_manual_content_type {
+                b = b.header("Content-Type", "application/json");
+            }
+            if !text.is_empty() && sends_body {
+                b = b.body(text);
+            }
+            b
+        }
+        BodyContent::Xml(text) => {
+            let mut b = builder;
+            if !has_manual_content_type {
+                b = b.header("Content-Type", "application/xml");
+            }
+            if !text.is_empty() && sends_body {
+                b = b.body(text);
+            }
+            b
+        }
+        BodyContent::FormUrlEncoded(pairs) => {
+            if !pairs.is_empty() && sends_body {
+                builder.form(&pairs)
+            } else {
+                builder
+            }
+        }
+        BodyContent::Multipart(parts) => {
+            if !parts.is_empty() && sends_body {
+                let mut form = reqwest::multipart::Form::new();
+                for part in parts {
+                    match part.field_type {
+                        MultipartPartType::Text => {
+                            form = form.text(part.key, part.value);
+                        }
+                        MultipartPartType::File => {
+                            let path = std::path::Path::new(&part.value);
+                            let file_bytes = std::fs::read(path).map_err(|e| {
+                                format!("Failed to read file '{}': {}", part.value, e)
+                            })?;
+                            let file_name = path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("file")
+                                .to_string();
+                            let file_part =
+                                reqwest::multipart::Part::bytes(file_bytes).file_name(file_name);
+                            form = form.part(part.key, file_part);
+                        }
+                    }
+                }
+                builder.multipart(form)
+            } else {
+                builder
+            }
+        }
+        BodyContent::Binary(path) => {
+            if !path.is_empty() && sends_body {
+                let bytes = std::fs::read(&path)
+                    .map_err(|e| format!("Failed to read file '{}': {}", path, e))?;
+                let mut b = builder;
+                if !has_manual_content_type {
+                    b = b.header("Content-Type", "application/octet-stream");
+                }
+                b.body(bytes)
+            } else {
+                builder
+            }
+        }
+    };
 
     let response = builder.send().await.map_err(format_request_error)?;
 

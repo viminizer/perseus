@@ -72,10 +72,60 @@ pub struct PostmanHeader {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostmanBodyOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw: Option<PostmanRawLanguage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostmanRawLanguage {
+    pub language: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostmanKvPair {
+    pub key: String,
+    pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostmanFormParam {
+    pub key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub src: Option<String>,
+    #[serde(rename = "type", default = "default_form_type")]
+    pub param_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled: Option<bool>,
+}
+
+fn default_form_type() -> String {
+    "text".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostmanFileRef {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub src: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PostmanBody {
     pub mode: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<PostmanBodyOptions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub urlencoded: Option<Vec<PostmanKvPair>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub formdata: Option<Vec<PostmanFormParam>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<PostmanFileRef>,
 }
 
 impl PostmanCollection {
@@ -127,6 +177,10 @@ impl PostmanRequest {
                 Some(PostmanBody {
                     mode: "raw".to_string(),
                     raw: Some(raw),
+                    options: None,
+                    urlencoded: None,
+                    formdata: None,
+                    file: None,
                 })
             }
         });
@@ -137,6 +191,84 @@ impl PostmanRequest {
             body,
             url: Value::String(url),
             auth: None,
+        }
+    }
+}
+
+impl PostmanBody {
+    pub fn raw(text: &str) -> Self {
+        Self {
+            mode: "raw".to_string(),
+            raw: Some(text.to_string()),
+            options: None,
+            urlencoded: None,
+            formdata: None,
+            file: None,
+        }
+    }
+
+    pub fn json(text: &str) -> Self {
+        Self {
+            mode: "raw".to_string(),
+            raw: Some(text.to_string()),
+            options: Some(PostmanBodyOptions {
+                raw: Some(PostmanRawLanguage {
+                    language: "json".to_string(),
+                }),
+            }),
+            urlencoded: None,
+            formdata: None,
+            file: None,
+        }
+    }
+
+    pub fn xml(text: &str) -> Self {
+        Self {
+            mode: "raw".to_string(),
+            raw: Some(text.to_string()),
+            options: Some(PostmanBodyOptions {
+                raw: Some(PostmanRawLanguage {
+                    language: "xml".to_string(),
+                }),
+            }),
+            urlencoded: None,
+            formdata: None,
+            file: None,
+        }
+    }
+
+    pub fn urlencoded(pairs: Vec<PostmanKvPair>) -> Self {
+        Self {
+            mode: "urlencoded".to_string(),
+            raw: None,
+            options: None,
+            urlencoded: Some(pairs),
+            formdata: None,
+            file: None,
+        }
+    }
+
+    pub fn formdata(params: Vec<PostmanFormParam>) -> Self {
+        Self {
+            mode: "formdata".to_string(),
+            raw: None,
+            options: None,
+            urlencoded: None,
+            formdata: Some(params),
+            file: None,
+        }
+    }
+
+    pub fn file(path: &str) -> Self {
+        Self {
+            mode: "file".to_string(),
+            raw: None,
+            options: None,
+            urlencoded: None,
+            formdata: None,
+            file: Some(PostmanFileRef {
+                src: Some(path.to_string()),
+            }),
         }
     }
 }
