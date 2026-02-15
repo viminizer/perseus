@@ -27,6 +27,7 @@ use crate::storage::{
     self, CollectionStore, NodeKind, PostmanHeader, PostmanItem, PostmanRequest, ProjectInfo,
     ProjectTree, TreeNode,
 };
+use crate::storage::environment::{self, Environment};
 use crate::vim::{Transition, Vim, VimMode};
 use crate::{http, ui};
 
@@ -680,6 +681,10 @@ pub struct App {
     pub response_headers_editor: TextArea<'static>,
     pub(crate) response_body_cache: ResponseBodyRenderCache,
     pub(crate) response_headers_cache: ResponseHeadersRenderCache,
+    pub environments: Vec<Environment>,
+    pub active_environment_name: Option<String>,
+    pub show_env_popup: bool,
+    pub env_popup_index: usize,
 }
 
 impl App {
@@ -809,6 +814,8 @@ impl App {
             .write_all_request_files()
             .map_err(anyhow::Error::msg)?;
 
+        let environments = environment::load_all_environments().unwrap_or_default();
+
         let mut app = Self {
             running: true,
             dirty: true,
@@ -858,6 +865,10 @@ impl App {
             },
             response_body_cache: ResponseBodyRenderCache::new(),
             response_headers_cache: ResponseHeadersRenderCache::new(),
+            environments,
+            active_environment_name: None,
+            show_env_popup: false,
+            env_popup_index: 0,
         };
 
         if let Some(request_id) = created_request_id {
@@ -880,6 +891,12 @@ impl App {
         app.apply_editor_tab_size();
         app.persist_ui_state();
         Ok(app)
+    }
+
+    fn active_environment(&self) -> Option<&Environment> {
+        self.active_environment_name
+            .as_ref()
+            .and_then(|name| self.environments.iter().find(|e| e.name == *name))
     }
 
     fn apply_editor_tab_size(&mut self) {
