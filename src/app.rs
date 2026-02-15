@@ -27,6 +27,7 @@ use crate::storage::{
     self, CollectionStore, NodeKind, PostmanHeader, PostmanItem, PostmanRequest, ProjectInfo,
     ProjectTree, TreeNode,
 };
+use crate::storage::environment::{self, Environment};
 use crate::vim::{Transition, Vim, VimMode};
 use crate::{http, ui};
 
@@ -680,6 +681,10 @@ pub struct App {
     pub response_headers_editor: TextArea<'static>,
     pub(crate) response_body_cache: ResponseBodyRenderCache,
     pub(crate) response_headers_cache: ResponseHeadersRenderCache,
+    pub environments: Vec<Environment>,
+    pub active_environment_name: Option<String>,
+    pub show_env_popup: bool,
+    pub env_popup_index: usize,
 }
 
 impl App {
@@ -809,6 +814,8 @@ impl App {
             .write_all_request_files()
             .map_err(anyhow::Error::msg)?;
 
+        let environments = environment::load_all_environments().unwrap_or_default();
+
         let mut app = Self {
             running: true,
             dirty: true,
@@ -858,6 +865,10 @@ impl App {
             },
             response_body_cache: ResponseBodyRenderCache::new(),
             response_headers_cache: ResponseHeadersRenderCache::new(),
+            environments,
+            active_environment_name: None,
+            show_env_popup: false,
+            env_popup_index: 0,
         };
 
         if let Some(request_id) = created_request_id {
@@ -880,6 +891,12 @@ impl App {
         app.apply_editor_tab_size();
         app.persist_ui_state();
         Ok(app)
+    }
+
+    fn active_environment(&self) -> Option<&Environment> {
+        self.active_environment_name
+            .as_ref()
+            .and_then(|name| self.environments.iter().find(|e| e.name == *name))
     }
 
     fn apply_editor_tab_size(&mut self) {
@@ -2388,6 +2405,35 @@ impl App {
             return;
         }
 
+        // Handle environment popup when open
+        if self.show_env_popup {
+            match key.code {
+                KeyCode::Char('j') | KeyCode::Down => {
+                    let count = self.environments.len() + 1; // +1 for "No Environment"
+                    self.env_popup_index = (self.env_popup_index + 1) % count;
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    let count = self.environments.len() + 1;
+                    self.env_popup_index =
+                        (self.env_popup_index + count - 1) % count;
+                }
+                KeyCode::Enter => {
+                    self.active_environment_name = if self.env_popup_index == 0 {
+                        None
+                    } else {
+                        Some(self.environments[self.env_popup_index - 1].name.clone())
+                    };
+                    self.show_env_popup = false;
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.show_env_popup = false;
+                }
+                _ => {}
+            }
+            self.dirty = true;
+            return;
+        }
+
         // Handle auth type popup when open
         if self.show_auth_type_popup {
             self.handle_auth_type_popup(key);
@@ -2541,6 +2587,23 @@ impl App {
             return;
         }
 
+        // Ctrl+N: environment quick-switch popup
+        if key.code == KeyCode::Char('n') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.show_method_popup = false;
+            self.show_auth_type_popup = false;
+            self.show_env_popup = !self.show_env_popup;
+            if self.show_env_popup {
+                self.env_popup_index = self
+                    .active_environment_name
+                    .as_ref()
+                    .and_then(|name| self.environments.iter().position(|e| e.name == *name))
+                    .map(|i| i + 1)
+                    .unwrap_or(0);
+            }
+            self.dirty = true;
+            return;
+        }
+
         // Ctrl+h/l: horizontal navigation in input row
         if in_request && key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
@@ -2678,6 +2741,23 @@ impl App {
             return;
         }
 
+        // Ctrl+N: environment quick-switch popup from sidebar mode
+        if key.code == KeyCode::Char('n') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.show_method_popup = false;
+            self.show_auth_type_popup = false;
+            self.show_env_popup = !self.show_env_popup;
+            if self.show_env_popup {
+                self.env_popup_index = self
+                    .active_environment_name
+                    .as_ref()
+                    .and_then(|name| self.environments.iter().position(|e| e.name == *name))
+                    .map(|i| i + 1)
+                    .unwrap_or(0);
+            }
+            self.dirty = true;
+            return;
+        }
+
         if key.code == KeyCode::Esc {
             if self.sidebar.popup.is_some() {
                 self.sidebar.popup = None;
@@ -2721,6 +2801,23 @@ impl App {
             } else {
                 self.send_request(tx);
             }
+            return;
+        }
+
+        // Ctrl+N: environment quick-switch popup, even in editing mode
+        if key.code == KeyCode::Char('n') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.show_method_popup = false;
+            self.show_auth_type_popup = false;
+            self.show_env_popup = !self.show_env_popup;
+            if self.show_env_popup {
+                self.env_popup_index = self
+                    .active_environment_name
+                    .as_ref()
+                    .and_then(|name| self.environments.iter().position(|e| e.name == *name))
+                    .map(|i| i + 1)
+                    .unwrap_or(0);
+            }
+            self.dirty = true;
             return;
         }
 
@@ -2935,8 +3032,8 @@ impl App {
     }
 
     fn send_request(&mut self, tx: mpsc::Sender<Result<ResponseData, String>>) {
-        let url = self.request.url_text();
-        if url.is_empty() {
+        let raw_url = self.request.url_text();
+        if raw_url.is_empty() {
             self.response = ResponseStatus::Error("URL is required".to_string());
             return;
         }
@@ -2945,13 +3042,20 @@ impl App {
             return;
         }
 
+        // Resolve variables from active environment
+        let variables = environment::resolve_variables(self.active_environment());
+
+        let (url, _) = environment::substitute(&raw_url, &variables);
+        let (headers, _) =
+            environment::substitute(&self.request.headers_text(), &variables);
+        let (body, _) =
+            environment::substitute(&self.request.body_text(), &variables);
+        let auth = self.build_resolved_auth_config(&variables);
+
         self.response = ResponseStatus::Loading;
 
         let client = self.client.clone();
         let method = self.request.method.clone();
-        let headers = self.request.headers_text();
-        let body = self.request.body_text();
-        let auth = self.request.build_auth_config();
 
         let handle = tokio::spawn(async move {
             let result =
@@ -2959,6 +3063,38 @@ impl App {
             let _ = tx.send(result).await;
         });
         self.request_handle = Some(handle.abort_handle());
+    }
+
+    fn build_resolved_auth_config(
+        &self,
+        variables: &std::collections::HashMap<String, String>,
+    ) -> http::AuthConfig {
+        match self.request.auth_type {
+            AuthType::NoAuth => http::AuthConfig::NoAuth,
+            AuthType::Bearer => {
+                let (token, _) =
+                    environment::substitute(&self.request.auth_token_text(), variables);
+                http::AuthConfig::Bearer { token }
+            }
+            AuthType::Basic => {
+                let (username, _) =
+                    environment::substitute(&self.request.auth_username_text(), variables);
+                let (password, _) =
+                    environment::substitute(&self.request.auth_password_text(), variables);
+                http::AuthConfig::Basic { username, password }
+            }
+            AuthType::ApiKey => {
+                let (key, _) =
+                    environment::substitute(&self.request.auth_key_name_text(), variables);
+                let (value, _) =
+                    environment::substitute(&self.request.auth_key_value_text(), variables);
+                http::AuthConfig::ApiKey {
+                    key,
+                    value,
+                    location: self.request.api_key_location,
+                }
+            }
+        }
     }
 
     fn cancel_request(&mut self) {
