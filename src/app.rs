@@ -219,6 +219,65 @@ impl From<HttpMethod> for Method {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AuthType {
+    #[default]
+    NoAuth,
+    Bearer,
+    Basic,
+    ApiKey,
+}
+
+impl AuthType {
+    pub const ALL: [AuthType; 4] = [
+        AuthType::NoAuth,
+        AuthType::Bearer,
+        AuthType::Basic,
+        AuthType::ApiKey,
+    ];
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AuthType::NoAuth => "No Auth",
+            AuthType::Bearer => "Bearer Token",
+            AuthType::Basic => "Basic Auth",
+            AuthType::ApiKey => "API Key",
+        }
+    }
+
+    pub fn from_index(index: usize) -> Self {
+        Self::ALL[index % Self::ALL.len()]
+    }
+
+    pub fn index(&self) -> usize {
+        match self {
+            AuthType::NoAuth => 0,
+            AuthType::Bearer => 1,
+            AuthType::Basic => 2,
+            AuthType::ApiKey => 3,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ApiKeyLocation {
+    #[default]
+    Header,
+    QueryParam,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AuthField {
+    #[default]
+    AuthType,
+    Token,
+    Username,
+    Password,
+    KeyName,
+    KeyValue,
+    KeyLocation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[allow(dead_code)]
 pub enum Panel {
     Sidebar,
@@ -241,6 +300,7 @@ pub enum RequestField {
 pub struct FocusState {
     pub panel: Panel,
     pub request_field: RequestField,
+    pub auth_field: AuthField,
 }
 
 #[derive(Debug, Clone)]
@@ -352,6 +412,13 @@ pub struct RequestState {
     pub url_editor: TextArea<'static>,
     pub headers_editor: TextArea<'static>,
     pub body_editor: TextArea<'static>,
+    pub auth_type: AuthType,
+    pub api_key_location: ApiKeyLocation,
+    pub auth_token_editor: TextArea<'static>,
+    pub auth_username_editor: TextArea<'static>,
+    pub auth_password_editor: TextArea<'static>,
+    pub auth_key_name_editor: TextArea<'static>,
+    pub auth_key_value_editor: TextArea<'static>,
 }
 
 #[derive(Clone, Copy)]
@@ -372,11 +439,33 @@ impl RequestState {
         let mut body_editor = TextArea::default();
         configure_editor(&mut body_editor, "Request body...");
 
+        let mut auth_token_editor = TextArea::default();
+        configure_editor(&mut auth_token_editor, "Token");
+
+        let mut auth_username_editor = TextArea::default();
+        configure_editor(&mut auth_username_editor, "Username");
+
+        let mut auth_password_editor = TextArea::default();
+        configure_editor(&mut auth_password_editor, "Password");
+
+        let mut auth_key_name_editor = TextArea::default();
+        configure_editor(&mut auth_key_name_editor, "Key name");
+
+        let mut auth_key_value_editor = TextArea::default();
+        configure_editor(&mut auth_key_value_editor, "Key value");
+
         Self {
             method: Method::default(),
             url_editor,
             headers_editor,
             body_editor,
+            auth_type: AuthType::NoAuth,
+            api_key_location: ApiKeyLocation::Header,
+            auth_token_editor,
+            auth_username_editor,
+            auth_password_editor,
+            auth_key_name_editor,
+            auth_key_value_editor,
         }
     }
 
@@ -400,6 +489,23 @@ impl RequestState {
         configure_editor(&mut self.headers_editor, "Key: Value");
         self.body_editor = TextArea::new(body_lines);
         configure_editor(&mut self.body_editor, "Request body...");
+
+        self.reset_auth();
+    }
+
+    pub fn reset_auth(&mut self) {
+        self.auth_type = AuthType::NoAuth;
+        self.api_key_location = ApiKeyLocation::Header;
+        self.auth_token_editor = TextArea::default();
+        configure_editor(&mut self.auth_token_editor, "Token");
+        self.auth_username_editor = TextArea::default();
+        configure_editor(&mut self.auth_username_editor, "Username");
+        self.auth_password_editor = TextArea::default();
+        configure_editor(&mut self.auth_password_editor, "Password");
+        self.auth_key_name_editor = TextArea::default();
+        configure_editor(&mut self.auth_key_name_editor, "Key name");
+        self.auth_key_value_editor = TextArea::default();
+        configure_editor(&mut self.auth_key_value_editor, "Key value");
     }
 
     pub fn url_text(&self) -> String {
@@ -412,6 +518,26 @@ impl RequestState {
 
     pub fn body_text(&self) -> String {
         self.body_editor.lines().join("\n")
+    }
+
+    pub fn auth_token_text(&self) -> String {
+        self.auth_token_editor.lines().join("")
+    }
+
+    pub fn auth_username_text(&self) -> String {
+        self.auth_username_editor.lines().join("")
+    }
+
+    pub fn auth_password_text(&self) -> String {
+        self.auth_password_editor.lines().join("")
+    }
+
+    pub fn auth_key_name_text(&self) -> String {
+        self.auth_key_name_editor.lines().join("")
+    }
+
+    pub fn auth_key_value_text(&self) -> String {
+        self.auth_key_value_editor.lines().join("")
     }
 
     pub fn active_editor(&mut self, field: RequestField) -> Option<&mut TextArea<'static>> {
