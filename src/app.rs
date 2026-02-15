@@ -519,7 +519,7 @@ impl App {
 
         let ui_state = storage::load_ui_state()
             .map_err(anyhow::Error::msg)?
-            .unwrap_or_else(|| storage::UiState::new(project_list[0].id.to_string(), 32));
+            .unwrap_or_else(|| storage::UiState::new(project_list[0].id.to_string(), config.ui.sidebar_width));
 
         let root_key = storage::project_root_key();
         let session_state = match root_key.as_deref() {
@@ -680,8 +680,16 @@ impl App {
             }
         }
 
+        app.apply_editor_tab_size();
         app.persist_ui_state();
         Ok(app)
+    }
+
+    fn apply_editor_tab_size(&mut self) {
+        let tab = self.config.editor.tab_size;
+        self.request.url_editor.set_tab_length(tab);
+        self.request.headers_editor.set_tab_length(tab);
+        self.request.body_editor.set_tab_length(tab);
     }
 
     fn build_client(config: &Config) -> Result<Client> {
@@ -1080,6 +1088,7 @@ impl App {
                     .and_then(|b| b.raw.clone())
                     .unwrap_or_default();
                 self.request.set_contents(method, url, headers, body);
+                self.apply_editor_tab_size();
                 self.current_request_id = Some(request_id);
                 self.request_dirty = false;
                 self.focus.panel = Panel::Request;
@@ -2723,7 +2732,7 @@ fn collect_request_ids(item: &PostmanItem, out: &mut Vec<Uuid>) {
 }
 
 fn clamp_sidebar_width(value: u16) -> u16 {
-    value.max(28).min(42)
+    value.clamp(28, 60)
 }
 
 fn extract_url(value: &Value) -> String {
