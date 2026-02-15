@@ -9,6 +9,8 @@ pub enum HttpMethod {
     Put,
     Patch,
     Delete,
+    Head,
+    Options,
 }
 
 impl From<crate::app::HttpMethod> for HttpMethod {
@@ -19,6 +21,8 @@ impl From<crate::app::HttpMethod> for HttpMethod {
             crate::app::HttpMethod::Put => HttpMethod::Put,
             crate::app::HttpMethod::Patch => HttpMethod::Patch,
             crate::app::HttpMethod::Delete => HttpMethod::Delete,
+            crate::app::HttpMethod::Head => HttpMethod::Head,
+            crate::app::HttpMethod::Options => HttpMethod::Options,
         }
     }
 }
@@ -31,6 +35,8 @@ impl From<HttpMethod> for crate::app::HttpMethod {
             HttpMethod::Put => crate::app::HttpMethod::Put,
             HttpMethod::Patch => crate::app::HttpMethod::Patch,
             HttpMethod::Delete => crate::app::HttpMethod::Delete,
+            HttpMethod::Head => crate::app::HttpMethod::Head,
+            HttpMethod::Options => crate::app::HttpMethod::Options,
         }
     }
 }

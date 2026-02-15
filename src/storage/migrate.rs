@@ -43,6 +43,8 @@ pub fn migrate_legacy(
             HttpMethod::Put => "PUT",
             HttpMethod::Patch => "PATCH",
             HttpMethod::Delete => "DELETE",
+            HttpMethod::Head => "HEAD",
+            HttpMethod::Options => "OPTIONS",
         }
         .to_string();
 

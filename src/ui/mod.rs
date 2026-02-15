@@ -308,6 +308,8 @@ fn method_color(method: HttpMethod) -> Color {
         HttpMethod::Put => Color::Yellow,
         HttpMethod::Patch => Color::Magenta,
         HttpMethod::Delete => Color::Red,
+        HttpMethod::Head => Color::Cyan,
+        HttpMethod::Options => Color::White,
     }
 }
 

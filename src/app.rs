@@ -131,15 +131,19 @@ pub enum HttpMethod {
     Put,
     Patch,
     Delete,
+    Head,
+    Options,
 }
 
 impl HttpMethod {
-    pub const ALL: [HttpMethod; 5] = [
+    pub const ALL: [HttpMethod; 7] = [
         HttpMethod::Get,
         HttpMethod::Post,
         HttpMethod::Put,
         HttpMethod::Patch,
         HttpMethod::Delete,
+        HttpMethod::Head,
+        HttpMethod::Options,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -149,6 +153,8 @@ impl HttpMethod {
             HttpMethod::Put => "PUT",
             HttpMethod::Patch => "PATCH",
             HttpMethod::Delete => "DELETE",
+            HttpMethod::Head => "HEAD",
+            HttpMethod::Options => "OPTIONS",
         }
     }
 
@@ -159,6 +165,8 @@ impl HttpMethod {
             HttpMethod::Put => 2,
             HttpMethod::Patch => 3,
             HttpMethod::Delete => 4,
+            HttpMethod::Head => 5,
+            HttpMethod::Options => 6,
         }
     }
 
@@ -172,6 +180,8 @@ impl HttpMethod {
             "PUT" => HttpMethod::Put,
             "PATCH" => HttpMethod::Patch,
             "DELETE" => HttpMethod::Delete,
+            "HEAD" => HttpMethod::Head,
+            "OPTIONS" => HttpMethod::Options,
             _ => HttpMethod::Get,
         }
     }

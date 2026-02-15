@@ -19,6 +19,8 @@ pub async fn send_request(
         HttpMethod::Put => client.put(url),
         HttpMethod::Patch => client.patch(url),
         HttpMethod::Delete => client.delete(url),
+        HttpMethod::Head => client.head(url),
+        HttpMethod::Options => client.request(reqwest::Method::OPTIONS, url),
     };
 
     for line in headers.lines() {
@@ -33,7 +35,11 @@ pub async fn send_request(
         }
     }
 
-    if !body.is_empty() && matches!(method, HttpMethod::Post | HttpMethod::Put | HttpMethod::Patch)
+    if !body.is_empty()
+        && matches!(
+            method,
+            HttpMethod::Post | HttpMethod::Put | HttpMethod::Patch | HttpMethod::Delete
+        )
     {
         builder = builder.body(body.to_string());
     }
