@@ -1988,20 +1988,31 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         Panel::Response => format!("Response > {}", app.response_tab.label()),
     };
 
+    let in_response = app.focus.panel == Panel::Response;
     let hints = if app.focus.panel == Panel::Sidebar {
         if matches!(app.app_mode, AppMode::Sidebar) {
             "j/k:move  a:add  r:rename  d:del  m:move  /:search  Enter:open  Esc:exit"
         } else {
             "Enter/i:edit  hjkl:nav  Ctrl+p:projects  Ctrl+e:toggle"
         }
+    } else if app.response_search.active {
+        "type:search  Enter:confirm  Esc:cancel  Ctrl+i:case"
     } else {
         match app.app_mode {
             AppMode::Navigation => {
-                "hjkl:nav  e:sidebar  Enter:edit  i:insert  Ctrl+r:send  Ctrl+s:save  Ctrl+n:env  Ctrl+e:toggle  ?:help  q:quit"
+                if in_response {
+                    "hjkl:nav  Enter:edit  c:copy  S:save  Ctrl+r:send  ?:help  q:quit"
+                } else {
+                    "hjkl:nav  e:sidebar  Enter:edit  i:insert  Ctrl+r:send  Ctrl+s:save  Ctrl+n:env  Ctrl+e:toggle  ?:help  q:quit"
+                }
             }
             AppMode::Editing => match app.vim.mode {
                 VimMode::Normal => {
-                    "hjkl:move  w/b/e:word  i/a:insert  v:visual  d/c/y:op  Cmd/Ctrl+C/V:clip  Esc:exit"
+                    if in_response && app.response_tab == ResponseTab::Body {
+                        "hjkl:move  /:search  n/N:next/prev  v:visual  Cmd/Ctrl+C/V:clip  Esc:exit"
+                    } else {
+                        "hjkl:move  w/b/e:word  i/a:insert  v:visual  d/c/y:op  Cmd/Ctrl+C/V:clip  Esc:exit"
+                    }
                 }
                 VimMode::Insert => {
                     "type text  Cmd/Ctrl+V:paste  Cmd/Ctrl+C:copy  Enter:send(URL)  Esc:normal"
@@ -2083,6 +2094,8 @@ fn render_help_overlay(frame: &mut Frame) {
         Line::from("  Ctrl+p      Project switcher"),
         Line::from("  Ctrl+s      Save request"),
         Line::from("  Ctrl+n      Switch environment"),
+        Line::from("  c           Copy response (on response panel)"),
+        Line::from("  S           Save response to file (on response panel)"),
         Line::from("  q / Esc     Quit"),
         Line::from(""),
         Line::from(Span::styled(
@@ -2126,6 +2139,16 @@ fn render_help_overlay(frame: &mut Frame) {
         Line::from("  u / Ctrl+r  Undo / redo"),
         Line::from("  Enter       Send request (URL field only)"),
         Line::from("  Esc         Exit to navigation mode"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Response Search (Body tab)",
+            Style::default().fg(Color::Yellow),
+        )),
+        Line::from("  /           Open search bar"),
+        Line::from("  n / N       Next / previous match"),
+        Line::from("  Enter       Confirm search, close input bar"),
+        Line::from("  Esc         Cancel search, clear highlights"),
+        Line::from("  Ctrl+i      Toggle case sensitivity"),
     ];
 
     let help_paragraph = Paragraph::new(help_text);
