@@ -184,7 +184,7 @@ fn render_sidebar_popup(frame: &mut Frame, app: &App, popup: &SidebarPopup, area
             vec![
                 Line::from("Name or path (folder/req or folder/)"),
                 Line::from(""),
-                Line::from(render_input_line(input)),
+                render_input_line(input),
                 Line::from(""),
                 Line::from("Enter: create  Esc: cancel"),
             ],
@@ -194,7 +194,7 @@ fn render_sidebar_popup(frame: &mut Frame, app: &App, popup: &SidebarPopup, area
             vec![
                 Line::from("New name"),
                 Line::from(""),
-                Line::from(render_input_line(input)),
+                render_input_line(input),
                 Line::from(""),
                 Line::from("Enter: rename  Esc: cancel"),
             ],
@@ -204,7 +204,7 @@ fn render_sidebar_popup(frame: &mut Frame, app: &App, popup: &SidebarPopup, area
             vec![
                 Line::from("Filter items"),
                 Line::from(""),
-                Line::from(render_input_line(input)),
+                render_input_line(input),
                 Line::from(""),
                 Line::from("Enter: apply  Esc: clear"),
             ],
@@ -555,9 +555,7 @@ fn render_kv_table(
                 frame.render_widget(ta, cols[1]);
             }
         } else {
-            let key_display = if row.key.is_empty() && !is_active_row {
-                ""
-            } else if row.key.is_empty() {
+            let key_display = if row.key.is_empty() {
                 ""
             } else {
                 row.key
@@ -825,7 +823,7 @@ fn render_save_popup(frame: &mut Frame, app: &App) {
     frame.render_widget(popup_block, popup_area);
 
     if let Some(ref input) = app.save_popup {
-        let display = format!("{}", input.value);
+        let display = input.value.to_string();
         let cursor_pos = input.cursor;
 
         let mut spans = Vec::new();
@@ -1332,7 +1330,7 @@ fn response_status_text(app: &App, narrow: bool) -> (String, Style) {
 }
 
 fn status_color(status: u16) -> Color {
-    if status >= 200 && status < 300 {
+    if (200..300).contains(&status) {
         Color::Green
     } else if status >= 400 {
         Color::Red
@@ -1341,6 +1339,7 @@ fn status_color(status: u16) -> Color {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_response_body(
     frame: &mut Frame,
     response_editor: &TextArea<'static>,
@@ -1587,14 +1586,14 @@ fn colorize_json(json: &str) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let mut current_spans: Vec<Span<'static>> = Vec::new();
 
-    let mut chars = json.chars().peekable();
+    let chars = json.chars().peekable();
     let mut in_string = false;
     let mut current_token = String::new();
     let mut stack: Vec<char> = Vec::new();
     let mut expecting_key = false;
     let mut current_string_is_key = false;
 
-    while let Some(c) = chars.next() {
+    for c in chars {
         match c {
             '"' if !in_string => {
                 in_string = true;
@@ -1735,6 +1734,7 @@ fn colorize_headers(lines: &[String]) -> Vec<Line<'static>> {
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_wrapped_response_cached(
     frame: &mut Frame,
     area: Rect,
@@ -1818,7 +1818,7 @@ fn wrap_lines_with_cursor(
     let mut cursor_pos: Option<(usize, usize)> = None;
 
     for (row, line) in lines.iter().enumerate() {
-        let line_len = line_char_len(&line);
+        let line_len = line_char_len(line);
         let selection_range = selection_range_for_row(selection, row, line_len);
         let cursor_col = cursor.and_then(|(r, c)| if r == row { Some(c) } else { None });
         let (parts, line_cursor) =

@@ -2274,7 +2274,7 @@ impl App {
             return;
         };
         let path = self.sidebar_tree.path_for(id).join("/");
-        if let Err(_) = self.clipboard.set_text(path) {
+        if self.clipboard.set_text(path).is_err() {
             self.set_clipboard_toast("Clipboard write failed");
         } else {
             self.set_clipboard_toast("Copied path");
@@ -2316,7 +2316,7 @@ impl App {
                 (headers, "Copied response headers".to_string())
             }
         };
-        if let Err(_) = self.clipboard.set_text(text) {
+        if self.clipboard.set_text(text).is_err() {
             self.set_clipboard_toast("Clipboard write failed");
         } else {
             self.set_clipboard_toast(label);
@@ -2324,9 +2324,9 @@ impl App {
     }
 
     fn save_response_to_file(&mut self, raw_path: &str) {
-        let path_str = if raw_path.starts_with("~/") {
+        let path_str = if let Some(rest) = raw_path.strip_prefix("~/") {
             if let Ok(home) = std::env::var("HOME") {
-                format!("{}/{}", home, &raw_path[2..])
+                format!("{}/{}", home, rest)
             } else {
                 raw_path.to_string()
             }
@@ -2337,7 +2337,7 @@ impl App {
 
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() && !parent.exists() {
-                self.set_clipboard_toast(format!("Save failed: directory does not exist"));
+                self.set_clipboard_toast("Save failed: directory does not exist");
                 return;
             }
         }
@@ -2580,7 +2580,7 @@ impl App {
         }
 
         if let Some(yank) = new_yank {
-            if let Err(_) = self.clipboard.set_text(yank) {
+            if self.clipboard.set_text(yank).is_err() {
                 self.set_clipboard_toast("Clipboard write failed");
             }
         }
@@ -2739,7 +2739,7 @@ impl App {
 
         if let Some(text) = yank {
             self.update_last_yank(target, text.clone());
-            if let Err(_) = self.clipboard.set_text(text) {
+            if self.clipboard.set_text(text).is_err() {
                 self.set_clipboard_toast("Clipboard write failed");
             }
         }
@@ -3463,11 +3463,10 @@ impl App {
                     self.app_mode = AppMode::Sidebar;
                 } else if in_request && self.focus.request_field == RequestField::Body {
                     self.handle_body_enter();
-                } else if in_request && self.is_editable_field() {
-                    self.enter_editing(VimMode::Insert);
                 } else if in_request
-                    && self.focus.request_field == RequestField::Auth
-                    && self.is_auth_text_field()
+                    && (self.is_editable_field()
+                        || (self.focus.request_field == RequestField::Auth
+                            && self.is_auth_text_field()))
                 {
                     self.enter_editing(VimMode::Insert);
                 } else if in_response
@@ -3693,10 +3692,8 @@ impl App {
         let is_clipboard_modifier = key.modifiers.contains(KeyModifiers::CONTROL)
             || key.modifiers.contains(KeyModifiers::SUPER);
 
-        if is_request {
-            if key.code != KeyCode::Esc {
-                self.request_dirty = true;
-            }
+        if is_request && key.code != KeyCode::Esc {
+            self.request_dirty = true;
         }
 
         if is_clipboard_modifier && matches!(key.code, KeyCode::Char('v') | KeyCode::Char('V')) {
