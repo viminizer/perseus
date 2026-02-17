@@ -13,8 +13,8 @@ use tui_textarea::TextArea;
 use unicode_width::UnicodeWidthChar;
 
 use crate::app::{
-    App, AppMode, AuthField, AuthType, BodyField, BodyMode, HttpMethod, KvColumn, KvFocus, KvPair,
-    Method, MultipartField, MultipartFieldType, Panel, RequestField, RequestTab,
+    format_size, App, AppMode, AuthField, AuthType, BodyField, BodyMode, HttpMethod, KvColumn,
+    KvFocus, KvPair, Method, MultipartField, MultipartFieldType, Panel, RequestField, RequestTab,
     ResponseBodyRenderCache, ResponseHeadersRenderCache, ResponseStatus, ResponseTab,
     SidebarPopup, WrapCache,
 };
@@ -50,6 +50,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     if app.show_env_popup {
         render_env_popup(frame, app);
+    }
+
+    if app.save_popup.is_some() {
+        render_save_popup(frame, app);
     }
 
     if app.show_help {
@@ -802,6 +806,49 @@ fn render_env_popup(frame: &mut Frame, app: &App) {
     frame.render_widget(list, inner);
 }
 
+fn render_save_popup(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+    let width: u16 = 50.min(area.width.saturating_sub(4));
+    let height: u16 = 3;
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let popup_area = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, popup_area);
+
+    let popup_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(" Save Response ");
+
+    let inner = popup_block.inner(popup_area);
+    frame.render_widget(popup_block, popup_area);
+
+    if let Some(ref input) = app.save_popup {
+        let display = format!("{}", input.value);
+        let cursor_pos = input.cursor;
+
+        let mut spans = Vec::new();
+        if display.is_empty() {
+            spans.push(Span::styled(
+                "Enter file path...",
+                Style::default().fg(Color::DarkGray),
+            ));
+        } else {
+            spans.push(Span::raw(&display));
+        }
+
+        let line = Line::from(spans);
+        let input_widget = Paragraph::new(line);
+        frame.render_widget(input_widget, inner);
+
+        // Position cursor
+        let cx = inner.x + cursor_pos.min(inner.width as usize) as u16;
+        let cy = inner.y;
+        frame.set_cursor_position((cx, cy));
+    }
+}
+
 fn is_field_focused(app: &App, field: RequestField) -> bool {
     app.focus.panel == Panel::Request && app.focus.request_field == field
 }
@@ -1204,7 +1251,7 @@ fn render_response_panel(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn render_response_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let (status_text, status_style) = response_status_text(app);
+    let (status_text, status_style) = response_status_text(app, area.width < 50);
     let active_color = if app.focus.panel == Panel::Response {
         Color::Green
     } else {
@@ -1243,7 +1290,7 @@ fn render_response_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(status_widget, area);
 }
 
-fn response_status_text(app: &App) -> (String, Style) {
+fn response_status_text(app: &App, narrow: bool) -> (String, Style) {
     match &app.response {
         ResponseStatus::Empty => (
             "Idle".to_string(),
@@ -1258,10 +1305,20 @@ fn response_status_text(app: &App) -> (String, Style) {
             "Cancelled".to_string(),
             Style::default().fg(Color::Yellow),
         ),
-        ResponseStatus::Success(data) => (
-            format!("{} {} ({}ms)", data.status, data.status_text, data.duration_ms),
-            Style::default().fg(status_color(data.status)),
-        ),
+        ResponseStatus::Success(data) => {
+            let text = if narrow {
+                format!("{} {} ({}ms)", data.status, data.status_text, data.duration_ms)
+            } else {
+                format!(
+                    "{} {} ({}ms) · {}",
+                    data.status,
+                    data.status_text,
+                    data.duration_ms,
+                    format_size(data.body_size_bytes),
+                )
+            };
+            (text, Style::default().fg(status_color(data.status)))
+        }
     }
 }
 

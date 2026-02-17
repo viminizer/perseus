@@ -189,7 +189,9 @@ pub async fn send_request(
         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
         .collect();
 
-    let response_body = response.text().await.map_err(|e| e.to_string())?;
+    let response_bytes = response.bytes().await.map_err(|e| e.to_string())?;
+    let body_size_bytes = response_bytes.len();
+    let response_body = String::from_utf8_lossy(&response_bytes).into_owned();
 
     let duration_ms = start.elapsed().as_millis() as u64;
 
@@ -198,6 +200,7 @@ pub async fn send_request(
         status_text,
         headers: response_headers,
         body: response_body,
+        body_size_bytes,
         duration_ms,
     })
 }

@@ -94,7 +94,24 @@ pub struct ResponseData {
     pub status_text: String,
     pub headers: Vec<(String, String)>,
     pub body: String,
+    pub body_size_bytes: usize,
     pub duration_ms: u64,
+}
+
+pub fn format_size(bytes: usize) -> String {
+    if bytes < 1024 {
+        return format!("{} B", bytes);
+    }
+    let kb = bytes as f64 / 1024.0;
+    if kb < 1024.0 {
+        return format!("{:.1} KB", kb);
+    }
+    let mb = kb / 1024.0;
+    if mb < 1024.0 {
+        return format!("{:.1} MB", mb);
+    }
+    let gb = mb / 1024.0;
+    format!("{:.1} GB", gb)
 }
 
 fn is_json_like(headers: &[(String, String)], body: &str) -> bool {
@@ -907,6 +924,7 @@ pub struct App {
     pub show_body_mode_popup: bool,
     pub body_mode_popup_index: usize,
     pub kv_edit_textarea: Option<TextArea<'static>>,
+    pub save_popup: Option<TextInput>,
 }
 
 impl App {
@@ -1094,6 +1112,7 @@ impl App {
             show_body_mode_popup: false,
             body_mode_popup_index: 0,
             kv_edit_textarea: None,
+            save_popup: None,
         };
 
         if let Some(request_id) = created_request_id {
@@ -2154,6 +2173,72 @@ impl App {
         }
     }
 
+    fn copy_response_content(&mut self) {
+        let body_size = match &self.response {
+            ResponseStatus::Success(data) => data.body_size_bytes,
+            _ => {
+                self.set_clipboard_toast("No response to copy");
+                return;
+            }
+        };
+        let (text, label) = match self.response_tab {
+            ResponseTab::Body => {
+                let body = self.response_editor.lines().join("\n");
+                let size = format_size(body_size);
+                (body, format!("Copied response body ({})", size))
+            }
+            ResponseTab::Headers => {
+                let headers = self.response_headers_editor.lines().join("\n");
+                (headers, "Copied response headers".to_string())
+            }
+        };
+        if let Err(_) = self.clipboard.set_text(text) {
+            self.set_clipboard_toast("Clipboard write failed");
+        } else {
+            self.set_clipboard_toast(label);
+        }
+    }
+
+    fn save_response_to_file(&mut self, raw_path: &str) {
+        let path_str = if raw_path.starts_with("~/") {
+            if let Ok(home) = std::env::var("HOME") {
+                format!("{}/{}", home, &raw_path[2..])
+            } else {
+                raw_path.to_string()
+            }
+        } else {
+            raw_path.to_string()
+        };
+        let path = std::path::Path::new(&path_str);
+
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() && !parent.exists() {
+                self.set_clipboard_toast(format!("Save failed: directory does not exist"));
+                return;
+            }
+        }
+
+        if !matches!(self.response, ResponseStatus::Success(_)) {
+            self.set_clipboard_toast("No response to save");
+            return;
+        }
+
+        let content = match self.response_tab {
+            ResponseTab::Body => self.response_editor.lines().join("\n"),
+            ResponseTab::Headers => self.response_headers_editor.lines().join("\n"),
+        };
+
+        match std::fs::write(path, &content) {
+            Ok(_) => {
+                let size = format_size(content.len());
+                self.set_clipboard_toast(format!("Saved to {} ({})", raw_path, size));
+            }
+            Err(err) => {
+                self.set_clipboard_toast(format!("Save failed: {}", err));
+            }
+        }
+    }
+
     fn sidebar_expand_or_open(&mut self) {
         let Some(node) = self.sidebar_selected_node() else {
             return;
@@ -2951,6 +3036,26 @@ impl App {
             return;
         }
 
+        // Handle save popup when open
+        if let Some(ref mut input) = self.save_popup {
+            match key.code {
+                KeyCode::Enter => {
+                    let path = input.value.clone();
+                    self.save_popup = None;
+                    if !path.trim().is_empty() {
+                        self.save_response_to_file(path.trim());
+                    }
+                }
+                KeyCode::Esc => {
+                    self.save_popup = None;
+                }
+                _ => {
+                    handle_text_input(input, key);
+                }
+            }
+            return;
+        }
+
         if self.sidebar.popup.is_some() {
             self.handle_sidebar_popup(key);
             return;
@@ -3159,6 +3264,25 @@ impl App {
                 return;
             }
             _ => {}
+        }
+
+        // Response-specific shortcuts
+        if in_response && key.modifiers.is_empty() {
+            match key.code {
+                KeyCode::Char('c') => {
+                    self.copy_response_content();
+                    return;
+                }
+                KeyCode::Char('S') => {
+                    if matches!(self.response, ResponseStatus::Success(_)) {
+                        self.save_popup = Some(TextInput::new(String::new()));
+                    } else {
+                        self.set_clipboard_toast("No response to save");
+                    }
+                    return;
+                }
+                _ => {}
+            }
         }
 
         match key.code {
