@@ -15,8 +15,8 @@ use unicode_width::UnicodeWidthChar;
 use crate::app::{
     format_size, App, AppMode, AuthField, AuthType, BodyField, BodyMode, HttpMethod, KvColumn,
     KvFocus, KvPair, Method, MultipartField, MultipartFieldType, Panel, RequestField, RequestTab,
-    ResponseBodyRenderCache, ResponseHeadersRenderCache, ResponseStatus, ResponseTab,
-    SidebarPopup, WrapCache,
+    ResponseBodyRenderCache, ResponseHeadersRenderCache, ResponseSearch, ResponseStatus,
+    ResponseTab, SearchMatch, SidebarPopup, WrapCache,
 };
 use crate::perf;
 use crate::storage::NodeKind;
@@ -1182,7 +1182,10 @@ fn render_response_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let inner_area = outer_block.inner(area);
     frame.render_widget(outer_block, area);
 
-    let response_layout = ResponseLayout::new(inner_area);
+    let search_bar_visible = app.response_search.active
+        || (!app.response_search.query.is_empty()
+            && app.response_tab == ResponseTab::Body);
+    let response_layout = ResponseLayout::new(inner_area, search_bar_visible);
     render_response_tab_bar(frame, app, response_layout.tab_area);
     frame.render_widget(Paragraph::new(""), response_layout.spacer_area);
 
@@ -1231,6 +1234,7 @@ fn render_response_panel(frame: &mut Frame, app: &mut App, area: Rect) {
                         response_layout.content_area,
                         response_scroll,
                         editing_response,
+                        &app.response_search,
                     );
                 }
                 ResponseTab::Headers => {
@@ -1247,6 +1251,11 @@ fn render_response_panel(frame: &mut Frame, app: &mut App, area: Rect) {
                 }
             }
         }
+    }
+
+    // Render search bar
+    if let Some(search_area) = response_layout.search_bar_area {
+        render_search_bar(frame, &app.response_search, search_area);
     }
 }
 
@@ -1340,6 +1349,7 @@ fn render_response_body(
     area: Rect,
     scroll_offset: u16,
     editing: bool,
+    search: &ResponseSearch,
 ) {
     if cache.dirty {
         let editor_lines = response_editor.lines();
@@ -1357,6 +1367,17 @@ fn render_response_body(
         cache.dirty = false;
         cache.wrap_cache.generation = 0;
     }
+
+    // Apply search highlights on top of colorized lines
+    let lines_to_render = if !search.matches.is_empty() {
+        apply_search_highlights(&cache.lines, &search.matches, search.current_match)
+    } else {
+        cache.lines.clone()
+    };
+
+    // Use search generation to force cache invalidation when search changes
+    let effective_generation = cache.generation.wrapping_add(search.generation);
+
     let cursor = if editing {
         Some(response_editor.cursor())
     } else {
@@ -1370,14 +1391,146 @@ fn render_response_body(
     render_wrapped_response_cached(
         frame,
         area,
-        &cache.lines,
+        &lines_to_render,
         &mut cache.wrap_cache,
-        cache.generation,
+        effective_generation,
         cursor,
         selection,
         scroll_offset,
         editing,
     );
+}
+
+fn apply_search_highlights(
+    lines: &[Line<'static>],
+    matches: &[SearchMatch],
+    current_match: usize,
+) -> Vec<Line<'static>> {
+    let highlight_style = Style::default().fg(Color::Black).bg(Color::Yellow);
+    let current_style = Style::default().fg(Color::Black).bg(Color::LightRed);
+
+    let mut result = lines.to_vec();
+
+    // Group matches by line
+    for (match_idx, m) in matches.iter().enumerate() {
+        if m.line_index >= result.len() {
+            continue;
+        }
+        let style = if match_idx == current_match {
+            current_style
+        } else {
+            highlight_style
+        };
+
+        let line = &result[m.line_index];
+        result[m.line_index] = highlight_spans_in_line(line, m.byte_start, m.byte_end, style);
+    }
+
+    result
+}
+
+fn highlight_spans_in_line(
+    line: &Line<'static>,
+    byte_start: usize,
+    byte_end: usize,
+    highlight_style: Style,
+) -> Line<'static> {
+    let mut new_spans: Vec<Span<'static>> = Vec::new();
+    let mut byte_offset: usize = 0;
+
+    for span in line.spans.iter() {
+        let span_content = span.content.as_ref();
+        let span_len = span_content.len();
+        let span_start = byte_offset;
+        let span_end = byte_offset + span_len;
+
+        if byte_end <= span_start || byte_start >= span_end {
+            // No overlap
+            new_spans.push(span.clone());
+        } else {
+            // There is overlap - split the span
+            let hl_start = byte_start.saturating_sub(span_start);
+            let hl_end = (byte_end - span_start).min(span_len);
+
+            if hl_start > 0 {
+                new_spans.push(Span::styled(
+                    span_content[..hl_start].to_string(),
+                    span.style,
+                ));
+            }
+            new_spans.push(Span::styled(
+                span_content[hl_start..hl_end].to_string(),
+                highlight_style,
+            ));
+            if hl_end < span_len {
+                new_spans.push(Span::styled(
+                    span_content[hl_end..].to_string(),
+                    span.style,
+                ));
+            }
+        }
+
+        byte_offset += span_len;
+    }
+
+    Line::from(new_spans)
+}
+
+fn render_search_bar(frame: &mut Frame, search: &ResponseSearch, area: Rect) {
+    let case_indicator = if search.case_sensitive { "AA" } else { "Aa" };
+    let match_count = if search.matches.is_empty() {
+        "0/0".to_string()
+    } else {
+        format!("{}/{}", search.current_match + 1, search.matches.len())
+    };
+
+    let right_info = format!("[{}] {}", case_indicator, match_count);
+    let right_len = right_info.len() as u16;
+
+    // Left side: / prefix + query
+    let query_text = if search.active {
+        &search.input.value
+    } else {
+        &search.query
+    };
+    let left = format!("/{}", query_text);
+
+    let available_width = area.width.saturating_sub(right_len + 2);
+    let left_display = if left.len() > available_width as usize {
+        left[..available_width as usize].to_string()
+    } else {
+        left.clone()
+    };
+
+    let mut spans = vec![
+        Span::styled(
+            left_display,
+            Style::default().fg(Color::White),
+        ),
+    ];
+
+    // Pad to push right_info to the end
+    let padding_len = area
+        .width
+        .saturating_sub(left.len() as u16 + right_len) as usize;
+    if padding_len > 0 {
+        spans.push(Span::raw(" ".repeat(padding_len)));
+    }
+    spans.push(Span::styled(
+        right_info,
+        Style::default().fg(Color::DarkGray),
+    ));
+
+    let line = Line::from(spans);
+    let bar = Paragraph::new(line).style(Style::default().bg(Color::DarkGray).fg(Color::White));
+    frame.render_widget(bar, area);
+
+    // Position cursor when search input is active
+    if search.active {
+        let cursor_x = area.x + 1 + search.input.cursor as u16; // +1 for '/' prefix
+        let cursor_x = cursor_x.min(area.x + area.width.saturating_sub(1));
+        frame.set_cursor_position((cursor_x, area.y));
+    }
 }
 
 fn render_response_headers(

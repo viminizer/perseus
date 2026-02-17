@@ -119,21 +119,40 @@ pub struct ResponseLayout {
     pub tab_area: Rect,
     pub spacer_area: Rect,
     pub content_area: Rect,
+    pub search_bar_area: Option<Rect>,
 }
 
 impl ResponseLayout {
-    pub fn new(area: Rect) -> Self {
-        let chunks = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Min(3),
-        ])
-        .split(area);
+    pub fn new(area: Rect, search_active: bool) -> Self {
+        if search_active {
+            let chunks = Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Min(2),
+                Constraint::Length(1),
+            ])
+            .split(area);
 
-        Self {
-            tab_area: chunks[0],
-            spacer_area: chunks[1],
-            content_area: chunks[2],
+            Self {
+                tab_area: chunks[0],
+                spacer_area: chunks[1],
+                content_area: chunks[2],
+                search_bar_area: Some(chunks[3]),
+            }
+        } else {
+            let chunks = Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Min(3),
+            ])
+            .split(area);
+
+            Self {
+                tab_area: chunks[0],
+                spacer_area: chunks[1],
+                content_area: chunks[2],
+                search_bar_area: None,
+            }
         }
     }
 }

@@ -548,6 +548,110 @@ impl SidebarCache {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct SearchMatch {
+    pub line_index: usize,
+    pub byte_start: usize,
+    pub byte_end: usize,
+}
+
+pub struct ResponseSearch {
+    pub active: bool,
+    pub query: String,
+    pub input: TextInput,
+    pub matches: Vec<SearchMatch>,
+    pub current_match: usize,
+    pub case_sensitive: bool,
+    pub generation: u64,
+}
+
+impl ResponseSearch {
+    fn new() -> Self {
+        Self {
+            active: false,
+            query: String::new(),
+            input: TextInput::new(String::new()),
+            matches: Vec::new(),
+            current_match: 0,
+            case_sensitive: false,
+            generation: 0,
+        }
+    }
+
+    fn clear(&mut self) {
+        self.active = false;
+        self.query.clear();
+        self.input = TextInput::new(String::new());
+        self.matches.clear();
+        self.current_match = 0;
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    fn compute_matches(&mut self, text: &str) {
+        self.matches.clear();
+        self.current_match = 0;
+        let query = self.input.value.as_str();
+        if query.is_empty() {
+            self.generation = self.generation.wrapping_add(1);
+            return;
+        }
+        let (search_text, search_query);
+        if self.case_sensitive {
+            search_text = text.to_string();
+            search_query = query.to_string();
+        } else {
+            search_text = text.to_lowercase();
+            search_query = query.to_lowercase();
+        }
+
+        // Map byte offsets in the flat text to (line_index, byte_offset_in_line)
+        let mut line_start = 0;
+        let lines: Vec<&str> = text.split('\n').collect();
+        let mut line_byte_starts: Vec<usize> = Vec::with_capacity(lines.len());
+        for line in &lines {
+            line_byte_starts.push(line_start);
+            line_start += line.len() + 1; // +1 for '\n'
+        }
+
+        let query_len = search_query.len();
+        let mut start = 0;
+        while let Some(pos) = search_text[start..].find(&search_query) {
+            let abs_pos = start + pos;
+            // Find which line this position belongs to
+            let line_index = match line_byte_starts.binary_search(&abs_pos) {
+                Ok(i) => i,
+                Err(i) => i.saturating_sub(1),
+            };
+            let line_offset = abs_pos - line_byte_starts[line_index];
+            self.matches.push(SearchMatch {
+                line_index,
+                byte_start: line_offset,
+                byte_end: line_offset + query_len,
+            });
+            start = abs_pos + 1;
+        }
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    fn next_match(&mut self) {
+        if !self.matches.is_empty() {
+            self.current_match = (self.current_match + 1) % self.matches.len();
+            self.generation = self.generation.wrapping_add(1);
+        }
+    }
+
+    fn prev_match(&mut self) {
+        if !self.matches.is_empty() {
+            self.current_match = if self.current_match == 0 {
+                self.matches.len() - 1
+            } else {
+                self.current_match - 1
+            };
+            self.generation = self.generation.wrapping_add(1);
+        }
+    }
+}
+
 pub struct RequestState {
     pub method: Method,
     pub url_editor: TextArea<'static>,
@@ -683,6 +787,7 @@ impl RequestState {
         self.body_binary_path_editor.lines().join("")
     }
 
+    #[allow(dead_code)]
     pub fn build_body_content(&self) -> http::BodyContent {
         match self.body_mode {
             BodyMode::Raw => {
@@ -773,6 +878,7 @@ impl RequestState {
         self.auth_key_value_editor.lines().join("")
     }
 
+    #[allow(dead_code)]
     pub fn build_auth_config(&self) -> http::AuthConfig {
         match self.auth_type {
             AuthType::NoAuth => http::AuthConfig::NoAuth,
@@ -925,6 +1031,7 @@ pub struct App {
     pub body_mode_popup_index: usize,
     pub kv_edit_textarea: Option<TextArea<'static>>,
     pub save_popup: Option<TextInput>,
+    pub response_search: ResponseSearch,
 }
 
 impl App {
@@ -1113,6 +1220,7 @@ impl App {
             body_mode_popup_index: 0,
             kv_edit_textarea: None,
             save_popup: None,
+            response_search: ResponseSearch::new(),
         };
 
         if let Some(request_id) = created_request_id {
@@ -2173,6 +2281,22 @@ impl App {
         }
     }
 
+    fn scroll_to_search_match(&mut self) {
+        if let Some(m) = self.response_search.matches.get(self.response_search.current_match) {
+            // Approximate: set scroll so the match line is visible
+            // The wrap cache maps logical lines to visual lines, but we don't have
+            // access to it here. Use the logical line_index as an approximation.
+            let target_line = m.line_index as u16;
+            // If target is not visible, scroll to it
+            // We don't know the exact viewport height here, use a reasonable default
+            if target_line < self.response_scroll || target_line > self.response_scroll + 20 {
+                self.response_scroll = target_line.saturating_sub(3);
+            }
+            // Invalidate wrap cache to force re-render with highlight changes
+            self.response_body_cache.wrap_cache.generation = 0;
+        }
+    }
+
     fn copy_response_content(&mut self) {
         let body_size = match &self.response {
             ResponseStatus::Success(data) => data.body_size_bytes,
@@ -2846,6 +2970,7 @@ impl App {
                         self.response_body_cache.dirty = true;
                         self.response_headers_cache.dirty = true;
                     }
+                    self.response_search.clear();
                     self.dirty = true;
                 }
                 self.request_handle = None;
@@ -3497,6 +3622,68 @@ impl App {
                 }
                 KeyCode::Char('L') => {
                     self.next_response_tab();
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        // Response search: intercept keys when search bar is active
+        if is_response && self.response_search.active {
+            match key.code {
+                KeyCode::Enter => {
+                    self.response_search.active = false;
+                    if self.response_search.input.value.is_empty() {
+                        // Empty Enter: clear search
+                        self.response_search.clear();
+                    } else {
+                        self.response_search.query = self.response_search.input.value.clone();
+                    }
+                }
+                KeyCode::Esc => {
+                    self.response_search.clear();
+                }
+                KeyCode::Char('i')
+                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    self.response_search.case_sensitive = !self.response_search.case_sensitive;
+                    let body_text = self.response_body_cache.body_text.clone();
+                    self.response_search.compute_matches(&body_text);
+                }
+                _ => {
+                    handle_text_input(&mut self.response_search.input, key);
+                    let body_text = self.response_body_cache.body_text.clone();
+                    self.response_search.compute_matches(&body_text);
+                }
+            }
+            // Auto-scroll to current match
+            self.scroll_to_search_match();
+            return;
+        }
+
+        // Response search: '/' activates search, 'n'/'N' navigate matches
+        if is_response
+            && self.response_tab == ResponseTab::Body
+            && self.vim.mode == VimMode::Normal
+            && key.modifiers.is_empty()
+        {
+            match key.code {
+                KeyCode::Char('/') => {
+                    self.response_search.active = true;
+                    self.response_search.input = TextInput::new(
+                        self.response_search.query.clone(),
+                    );
+                    self.response_search.input.cursor = self.response_search.input.value.len();
+                    return;
+                }
+                KeyCode::Char('n') if !self.response_search.query.is_empty() => {
+                    self.response_search.next_match();
+                    self.scroll_to_search_match();
+                    return;
+                }
+                KeyCode::Char('N') if !self.response_search.query.is_empty() => {
+                    self.response_search.prev_match();
+                    self.scroll_to_search_match();
                     return;
                 }
                 _ => {}
