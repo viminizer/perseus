@@ -190,11 +190,11 @@ Measuring size from `response.bytes().await` gives the decompressed wire size (r
 - [x] Auto-scroll to current match position
 - [x] Search state cleared when new response arrives
 - [x] Search only active on Body tab; `/` is no-op on Headers tab
-- [ ] Help overlay updated with new search keybindings
+- [x] Help overlay updated with new search keybindings
 
 ### General
-- [ ] Help overlay (`?`) documents all new keybindings
-- [ ] Status bar hints updated for response-focused context
+- [x] Help overlay (`?`) documents all new keybindings
+- [x] Status bar hints updated for response-focused context
 - [ ] All features work correctly in both narrow (80 cols) and wide terminals
 - [ ] No regressions in existing response panel behavior
 
