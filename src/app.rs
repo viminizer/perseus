@@ -94,12 +94,35 @@ pub struct ResponseData {
     pub status_text: String,
     pub headers: Vec<(String, String)>,
     pub body: String,
+    pub body_size_bytes: usize,
     pub duration_ms: u64,
 }
 
-fn is_json_like(headers: &[(String, String)], body: &str) -> bool {
+pub fn format_size(bytes: usize) -> String {
+    if bytes < 1024 {
+        return format!("{} B", bytes);
+    }
+    let kb = bytes as f64 / 1024.0;
+    if kb < 1024.0 {
+        return format!("{:.1} KB", kb);
+    }
+    let mb = kb / 1024.0;
+    if mb < 1024.0 {
+        return format!("{:.1} MB", mb);
+    }
+    let gb = mb / 1024.0;
+    format!("{:.1} GB", gb)
+}
+
+/// Checks whether the given headers and body represent JSON content.
+///
+/// Returns `true` if either:
+/// - A `Content-Type` header contains `application/json` (case-insensitive), or
+/// - The trimmed body starts/ends with `{}` or `[]` (structural sniffing).
+pub fn is_json_content(headers: &[(String, String)], body: &str) -> bool {
     let has_json_content_type = headers.iter().any(|(k, v)| {
-        k.eq_ignore_ascii_case("content-type") && v.to_ascii_lowercase().contains("application/json")
+        k.eq_ignore_ascii_case("content-type")
+            && v.to_ascii_lowercase().contains("application/json")
     });
     if has_json_content_type {
         return true;
@@ -110,7 +133,7 @@ fn is_json_like(headers: &[(String, String)], body: &str) -> bool {
 }
 
 fn format_json_if_possible(headers: &[(String, String)], body: &str) -> String {
-    if !is_json_like(headers, body) {
+    if !is_json_content(headers, body) {
         return body.to_string();
     }
     match serde_json::from_str::<Value>(body) {
@@ -199,10 +222,14 @@ impl Method {
             Method::Custom(s) => s.as_str(),
         }
     }
+}
 
-    pub fn from_str(value: &str) -> Self {
-        let upper = value.to_uppercase();
-        match upper.as_str() {
+impl std::str::FromStr for Method {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let upper = s.to_uppercase();
+        Ok(match upper.as_str() {
             "GET" => Method::Standard(HttpMethod::Get),
             "POST" => Method::Standard(HttpMethod::Post),
             "PUT" => Method::Standard(HttpMethod::Put),
@@ -211,9 +238,8 @@ impl Method {
             "HEAD" => Method::Standard(HttpMethod::Head),
             "OPTIONS" => Method::Standard(HttpMethod::Options),
             _ => Method::Custom(upper),
-        }
+        })
     }
-
 }
 
 impl From<HttpMethod> for Method {
@@ -399,7 +425,6 @@ pub struct KvFocus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[allow(dead_code)]
 pub enum Panel {
     Sidebar,
     #[default]
@@ -436,13 +461,28 @@ pub struct TextInput {
 impl TextInput {
     pub fn new(value: String) -> Self {
         Self {
-            cursor: value.len(),
+            cursor: value.chars().count(),
             value,
         }
     }
 
+    /// Convert the character-based cursor index to a byte offset in the string.
+    pub fn byte_offset(&self) -> usize {
+        self.value
+            .char_indices()
+            .nth(self.cursor)
+            .map(|(i, _)| i)
+            .unwrap_or(self.value.len())
+    }
+
+    /// Return the number of characters in the value.
+    pub fn char_count(&self) -> usize {
+        self.value.chars().count()
+    }
+
     pub fn insert_char(&mut self, ch: char) {
-        self.value.insert(self.cursor, ch);
+        let byte_pos = self.byte_offset();
+        self.value.insert(byte_pos, ch);
         self.cursor += 1;
     }
 
@@ -451,14 +491,16 @@ impl TextInput {
             return;
         }
         self.cursor -= 1;
-        self.value.remove(self.cursor);
+        let byte_pos = self.byte_offset();
+        self.value.remove(byte_pos);
     }
 
     pub fn delete(&mut self) {
-        if self.cursor >= self.value.len() {
+        if self.cursor >= self.char_count() {
             return;
         }
-        self.value.remove(self.cursor);
+        let byte_pos = self.byte_offset();
+        self.value.remove(byte_pos);
     }
 
     pub fn move_left(&mut self) {
@@ -468,7 +510,7 @@ impl TextInput {
     }
 
     pub fn move_right(&mut self) {
-        if self.cursor < self.value.len() {
+        if self.cursor < self.char_count() {
             self.cursor += 1;
         }
     }
@@ -528,6 +570,218 @@ impl SidebarCache {
 
     fn invalidate_search(&mut self) {
         self.search_dirty = true;
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SearchMatch {
+    pub line_index: usize,
+    pub byte_start: usize,
+    pub byte_end: usize,
+}
+
+pub struct ResponseSearch {
+    pub active: bool,
+    pub query: String,
+    pub input: TextInput,
+    pub matches: Vec<SearchMatch>,
+    pub current_match: usize,
+    pub case_sensitive: bool,
+    pub generation: u64,
+    /// Cache key: body generation at last computation
+    cached_body_generation: u64,
+    /// Cache key: query string at last computation
+    cached_query: String,
+    /// Cache key: case_sensitive flag at last computation
+    cached_case_sensitive: bool,
+}
+
+impl ResponseSearch {
+    fn new() -> Self {
+        Self {
+            active: false,
+            query: String::new(),
+            input: TextInput::new(String::new()),
+            matches: Vec::new(),
+            current_match: 0,
+            case_sensitive: false,
+            generation: 0,
+            cached_body_generation: u64::MAX,
+            cached_query: String::new(),
+            cached_case_sensitive: false,
+        }
+    }
+
+    fn clear(&mut self) {
+        self.active = false;
+        self.query.clear();
+        self.input = TextInput::new(String::new());
+        self.matches.clear();
+        self.current_match = 0;
+        self.cached_body_generation = u64::MAX;
+        self.cached_query.clear();
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    /// Compute search matches using byte offsets from the original text.
+    ///
+    /// Skips recomputation when the body, query, and case-sensitivity haven't
+    /// changed since the last call (fixes per-keystroke allocation for large
+    /// bodies). Uses char-aware comparison so byte offsets are always valid
+    /// against the original text, even for Unicode chars whose byte length
+    /// changes under `to_lowercase()` (e.g. German sharp-s).
+    fn compute_matches(&mut self, text: &str, body_generation: u64) {
+        let query_owned = self.input.value.clone();
+        let query = query_owned.as_str();
+        if self.cached_body_generation == body_generation
+            && self.cached_case_sensitive == self.case_sensitive
+            && self.cached_query == query
+        {
+            return;
+        }
+        self.matches.clear();
+        self.current_match = 0;
+        self.cached_body_generation = body_generation;
+        self.cached_case_sensitive = self.case_sensitive;
+        self.cached_query.clear();
+        self.cached_query.push_str(query);
+        if query.is_empty() {
+            self.generation = self.generation.wrapping_add(1);
+            return;
+        }
+        // Build a line-start byte-offset table for mapping absolute byte
+        // positions into (line_index, offset_within_line) pairs.
+        let mut line_start: usize = 0;
+        let lines: Vec<&str> = text.split('\n').collect();
+        let mut line_byte_starts: Vec<usize> = Vec::with_capacity(lines.len());
+        for line in &lines {
+            line_byte_starts.push(line_start);
+            line_start += line.len() + 1; // +1 for '\n'
+        }
+
+        if self.case_sensitive {
+            // Case-sensitive: plain byte-string search on original text.
+            // No allocation needed -- we search directly on the borrowed text.
+            let query_len = query.len();
+            let mut start: usize = 0;
+            while start + query_len <= text.len() {
+                if let Some(pos) = text[start..].find(query) {
+                    let abs_pos = start + pos;
+                    let line_index = match line_byte_starts.binary_search(&abs_pos) {
+                        Ok(i) => i,
+                        Err(i) => i.saturating_sub(1),
+                    };
+                    let line_offset = abs_pos - line_byte_starts[line_index];
+                    self.matches.push(SearchMatch {
+                        line_index,
+                        byte_start: line_offset,
+                        byte_end: line_offset + query_len,
+                    });
+                    start = abs_pos + 1;
+                } else {
+                    break;
+                }
+            }
+        } else {
+            // Case-insensitive: char-aware matching that records byte offsets
+            // from the *original* text. This avoids the to_lowercase()
+            // byte-length mismatch where e.g. the German sharp-s (2 bytes)
+            // lowercases to "ss" (2 bytes, different chars) causing offset
+            // drift between the lowercased copy and the original.
+            //
+            // Strategy: flatten both text and query into sequences of
+            // (lowercased_char, source_byte, source_byte_len) entries, then
+            // slide a window over the text sequence comparing lowercased chars.
+            // Byte ranges are derived from the original text positions.
+            let query_lower: Vec<char> =
+                query.chars().flat_map(|c| c.to_lowercase()).collect();
+            if query_lower.is_empty() {
+                self.generation = self.generation.wrapping_add(1);
+                return;
+            }
+
+            // Build flat sequence: each lowercased char maps back to its
+            // source char's byte position and byte length in the original text.
+            // Tuple: (lowercased_char, source_byte_offset, source_char_byte_len)
+            let mut flat: Vec<(char, usize, usize)> = Vec::with_capacity(text.len());
+            for (byte_idx, ch) in text.char_indices() {
+                let src_len = ch.len_utf8();
+                for lc in ch.to_lowercase() {
+                    flat.push((lc, byte_idx, src_len));
+                }
+            }
+
+            let qlen = query_lower.len();
+            let flen = flat.len();
+            if qlen > flen {
+                self.generation = self.generation.wrapping_add(1);
+                return;
+            }
+
+            let mut i: usize = 0;
+            while i + qlen <= flen {
+                let mut matched = true;
+                for j in 0..qlen {
+                    if flat[i + j].0 != query_lower[j] {
+                        matched = false;
+                        break;
+                    }
+                }
+                if matched {
+                    // Byte range in original text: from the source byte of the
+                    // first matched entry to the end of the source char of the
+                    // last matched entry.
+                    let match_byte_start = flat[i].1;
+                    let last = &flat[i + qlen - 1];
+                    let match_byte_end = last.1 + last.2;
+
+                    let line_index =
+                        match line_byte_starts.binary_search(&match_byte_start) {
+                            Ok(idx) => idx,
+                            Err(idx) => idx.saturating_sub(1),
+                        };
+                    let line_offset =
+                        match_byte_start - line_byte_starts[line_index];
+                    let byte_end_in_line =
+                        match_byte_end - line_byte_starts[line_index];
+
+                    self.matches.push(SearchMatch {
+                        line_index,
+                        byte_start: line_offset,
+                        byte_end: byte_end_in_line,
+                    });
+                }
+
+                // Advance to the next original-char boundary in the flat
+                // sequence to allow overlapping matches starting at different
+                // source characters.
+                let cur_src = flat[i].1;
+                i += 1;
+                while i < flen && flat[i].1 == cur_src {
+                    i += 1;
+                }
+            }
+        }
+
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    fn next_match(&mut self) {
+        if !self.matches.is_empty() {
+            self.current_match = (self.current_match + 1) % self.matches.len();
+            self.generation = self.generation.wrapping_add(1);
+        }
+    }
+
+    fn prev_match(&mut self) {
+        if !self.matches.is_empty() {
+            self.current_match = if self.current_match == 0 {
+                self.matches.len() - 1
+            } else {
+                self.current_match - 1
+            };
+            self.generation = self.generation.wrapping_add(1);
+        }
     }
 }
 
@@ -666,76 +920,6 @@ impl RequestState {
         self.body_binary_path_editor.lines().join("")
     }
 
-    pub fn build_body_content(&self) -> http::BodyContent {
-        match self.body_mode {
-            BodyMode::Raw => {
-                let text = self.body_text();
-                if text.trim().is_empty() {
-                    http::BodyContent::None
-                } else {
-                    http::BodyContent::Raw(text)
-                }
-            }
-            BodyMode::Json => {
-                let text = self.body_text();
-                if text.trim().is_empty() {
-                    http::BodyContent::None
-                } else {
-                    http::BodyContent::Json(text)
-                }
-            }
-            BodyMode::Xml => {
-                let text = self.body_text();
-                if text.trim().is_empty() {
-                    http::BodyContent::None
-                } else {
-                    http::BodyContent::Xml(text)
-                }
-            }
-            BodyMode::FormUrlEncoded => {
-                let pairs: Vec<(String, String)> = self
-                    .body_form_pairs
-                    .iter()
-                    .filter(|p| p.enabled && !(p.key.is_empty() && p.value.is_empty()))
-                    .map(|p| (p.key.clone(), p.value.clone()))
-                    .collect();
-                if pairs.is_empty() {
-                    http::BodyContent::None
-                } else {
-                    http::BodyContent::FormUrlEncoded(pairs)
-                }
-            }
-            BodyMode::Multipart => {
-                let parts: Vec<http::MultipartPart> = self
-                    .body_multipart_fields
-                    .iter()
-                    .filter(|f| f.enabled && !f.key.is_empty())
-                    .map(|f| http::MultipartPart {
-                        key: f.key.clone(),
-                        value: f.value.clone(),
-                        field_type: match f.field_type {
-                            MultipartFieldType::Text => http::MultipartPartType::Text,
-                            MultipartFieldType::File => http::MultipartPartType::File,
-                        },
-                    })
-                    .collect();
-                if parts.is_empty() {
-                    http::BodyContent::None
-                } else {
-                    http::BodyContent::Multipart(parts)
-                }
-            }
-            BodyMode::Binary => {
-                let path = self.body_binary_path_text();
-                if path.trim().is_empty() {
-                    http::BodyContent::None
-                } else {
-                    http::BodyContent::Binary(path)
-                }
-            }
-        }
-    }
-
     pub fn auth_token_text(&self) -> String {
         self.auth_token_editor.lines().join("")
     }
@@ -754,24 +938,6 @@ impl RequestState {
 
     pub fn auth_key_value_text(&self) -> String {
         self.auth_key_value_editor.lines().join("")
-    }
-
-    pub fn build_auth_config(&self) -> http::AuthConfig {
-        match self.auth_type {
-            AuthType::NoAuth => http::AuthConfig::NoAuth,
-            AuthType::Bearer => http::AuthConfig::Bearer {
-                token: self.auth_token_text(),
-            },
-            AuthType::Basic => http::AuthConfig::Basic {
-                username: self.auth_username_text(),
-                password: self.auth_password_text(),
-            },
-            AuthType::ApiKey => http::AuthConfig::ApiKey {
-                key: self.auth_key_name_text(),
-                value: self.auth_key_value_text(),
-                location: self.api_key_location,
-            },
-        }
     }
 
     pub fn active_editor(
@@ -826,6 +992,12 @@ pub(crate) struct ResponseBodyRenderCache {
     pub(crate) is_json: bool,
     pub(crate) lines: Vec<Line<'static>>,
     pub(crate) wrap_cache: WrapCache,
+    /// Cached lines with search highlights applied. Avoids cloning all lines
+    /// every frame when search is active. Invalidated by `highlight_search_gen`.
+    pub(crate) highlighted_lines: Vec<Line<'static>>,
+    /// The search generation that produced `highlighted_lines`. When this differs
+    /// from `ResponseSearch::generation`, the highlight cache is stale.
+    pub(crate) highlight_search_gen: u64,
 }
 
 impl ResponseBodyRenderCache {
@@ -837,6 +1009,8 @@ impl ResponseBodyRenderCache {
             is_json: false,
             lines: Vec::new(),
             wrap_cache: WrapCache::new(),
+            highlighted_lines: Vec::new(),
+            highlight_search_gen: 0,
         }
     }
 }
@@ -862,51 +1036,55 @@ impl ResponseHeadersRenderCache {
 pub struct App {
     running: bool,
     dirty: bool,
-    pub config: Config,
-    pub request: RequestState,
-    pub focus: FocusState,
-    pub response: ResponseStatus,
-    pub response_tab: ResponseTab,
-    pub request_tab: RequestTab,
-    pub client: Client,
-    pub app_mode: AppMode,
-    pub vim: Vim,
-    pub response_scroll: u16,
-    pub loading_tick: u8,
-    pub show_help: bool,
-    pub show_method_popup: bool,
-    pub method_popup_index: usize,
-    pub method_popup_custom_mode: bool,
-    pub method_custom_input: String,
-    pub show_auth_type_popup: bool,
-    pub auth_type_popup_index: usize,
-    pub sidebar_visible: bool,
-    pub sidebar_width: u16,
-    pub collection: CollectionStore,
-    pub project_list: Vec<ProjectInfo>,
-    pub sidebar_tree: ProjectTree,
-    pub sidebar: SidebarState,
+    config: Config,
+    pub(crate) request: RequestState,
+    pub(crate) focus: FocusState,
+    pub(crate) response: ResponseStatus,
+    pub(crate) response_tab: ResponseTab,
+    pub(crate) request_tab: RequestTab,
+    client: Client,
+    pub(crate) app_mode: AppMode,
+    pub(crate) vim: Vim,
+    pub(crate) response_scroll: u16,
+    pub(crate) loading_tick: u8,
+    pub(crate) show_help: bool,
+    pub(crate) show_method_popup: bool,
+    pub(crate) method_popup_index: usize,
+    pub(crate) method_popup_custom_mode: bool,
+    pub(crate) method_custom_input: String,
+    pub(crate) show_auth_type_popup: bool,
+    pub(crate) auth_type_popup_index: usize,
+    pub(crate) sidebar_visible: bool,
+    pub(crate) sidebar_width: u16,
+    collection: CollectionStore,
+    pub(crate) project_list: Vec<ProjectInfo>,
+    pub(crate) sidebar_tree: ProjectTree,
+    pub(crate) sidebar: SidebarState,
     sidebar_cache: SidebarCache,
-    pub active_project_id: Uuid,
-    pub current_request_id: Option<Uuid>,
-    pub request_dirty: bool,
+    pub(crate) active_project_id: Uuid,
+    current_request_id: Option<Uuid>,
+    request_dirty: bool,
     clipboard_toast: Option<(String, Instant)>,
     request_handle: Option<tokio::task::AbortHandle>,
     clipboard: ClipboardProvider,
     last_yank_request: String,
     last_yank_response: String,
     last_yank_response_headers: String,
-    pub response_editor: TextArea<'static>,
-    pub response_headers_editor: TextArea<'static>,
+    pub(crate) response_editor: TextArea<'static>,
+    pub(crate) response_headers_editor: TextArea<'static>,
     pub(crate) response_body_cache: ResponseBodyRenderCache,
     pub(crate) response_headers_cache: ResponseHeadersRenderCache,
-    pub environments: Vec<Environment>,
-    pub active_environment_name: Option<String>,
-    pub show_env_popup: bool,
-    pub env_popup_index: usize,
-    pub show_body_mode_popup: bool,
-    pub body_mode_popup_index: usize,
-    pub kv_edit_textarea: Option<TextArea<'static>>,
+    pub(crate) environments: Vec<Environment>,
+    pub(crate) active_environment_name: Option<String>,
+    pub(crate) show_env_popup: bool,
+    pub(crate) env_popup_index: usize,
+    pub(crate) show_body_mode_popup: bool,
+    pub(crate) body_mode_popup_index: usize,
+    pub(crate) kv_edit_textarea: Option<TextArea<'static>>,
+    pub(crate) save_popup: Option<TextInput>,
+    pub(crate) response_search: ResponseSearch,
+    /// Actual height (in rows) of the response content area, updated each render frame.
+    pub(crate) response_viewport_height: u16,
 }
 
 impl App {
@@ -1094,6 +1272,9 @@ impl App {
             show_body_mode_popup: false,
             body_mode_popup_index: 0,
             kv_edit_textarea: None,
+            save_popup: None,
+            response_search: ResponseSearch::new(),
+            response_viewport_height: 20,
         };
 
         if let Some(request_id) = created_request_id {
@@ -1352,7 +1533,7 @@ impl App {
                 let method = if node.kind == NodeKind::Request {
                     node.request_method
                         .as_deref()
-                        .map(Method::from_str)
+                        .map(|s| s.parse::<Method>().unwrap())
                 } else {
                     None
                 };
@@ -1389,7 +1570,7 @@ impl App {
             let method = if node.kind == NodeKind::Request {
                 node.request_method
                     .as_deref()
-                    .map(Method::from_str)
+                    .map(|s| s.parse::<Method>().unwrap())
             } else {
                 None
             };
@@ -1628,7 +1809,7 @@ impl App {
             .get_item(request_id)
             .and_then(|item| item.request.clone());
         if let Some(request) = request_data {
-            let method = Method::from_str(&request.method);
+            let method = request.method.parse::<Method>().unwrap();
             let url = extract_url(&request.url);
             let headers = headers_to_text(&request.header);
             let raw_body = request
@@ -2147,10 +2328,154 @@ impl App {
             return;
         };
         let path = self.sidebar_tree.path_for(id).join("/");
-        if let Err(_) = self.clipboard.set_text(path) {
+        if self.clipboard.set_text(path).is_err() {
             self.set_clipboard_toast("Clipboard write failed");
         } else {
             self.set_clipboard_toast("Copied path");
+        }
+    }
+
+    fn scroll_to_search_match(&mut self) {
+        if let Some(m) = self.response_search.matches.get(self.response_search.current_match) {
+            // Approximate: set scroll so the match line is visible
+            // The wrap cache maps logical lines to visual lines, but we don't have
+            // access to it here. Use the logical line_index as an approximation.
+            let target_line = m.line_index as u16;
+            let viewport_height = self.response_viewport_height.max(1);
+            // If target is not visible, scroll to center it in the viewport
+            if target_line < self.response_scroll
+                || target_line >= self.response_scroll + viewport_height
+            {
+                self.response_scroll = target_line.saturating_sub(viewport_height / 3);
+            }
+            // Invalidate wrap cache to force re-render with highlight changes
+            self.response_body_cache.wrap_cache.generation = 0;
+        }
+    }
+
+    fn copy_response_content(&mut self) {
+        let body_size = match &self.response {
+            ResponseStatus::Success(data) => data.body_size_bytes,
+            _ => {
+                self.set_clipboard_toast("No response to copy");
+                return;
+            }
+        };
+        let (text, label) = match self.response_tab {
+            ResponseTab::Body => {
+                let body = self.response_editor.lines().join("\n");
+                let size = format_size(body_size);
+                (body, format!("Copied response body ({})", size))
+            }
+            ResponseTab::Headers => {
+                let headers = self.response_headers_editor.lines().join("\n");
+                (headers, "Copied response headers".to_string())
+            }
+        };
+        if self.clipboard.set_text(text).is_err() {
+            self.set_clipboard_toast("Clipboard write failed");
+        } else {
+            self.set_clipboard_toast(label);
+        }
+    }
+
+    fn save_response_to_file(&mut self, raw_path: &str) {
+        let trimmed = raw_path.trim();
+        if trimmed.is_empty() {
+            self.set_clipboard_toast("Save failed: empty path");
+            return;
+        }
+
+        // Expand tilde: handle both "~" alone and "~/..." prefix
+        let path_str = if trimmed == "~" {
+            match std::env::var("HOME") {
+                Ok(home) => home,
+                Err(_) => {
+                    self.set_clipboard_toast("Save failed: could not resolve home directory");
+                    return;
+                }
+            }
+        } else if let Some(rest) = trimmed.strip_prefix("~/") {
+            match std::env::var("HOME") {
+                Ok(home) => format!("{}/{}", home, rest),
+                Err(_) => {
+                    self.set_clipboard_toast("Save failed: could not resolve home directory");
+                    return;
+                }
+            }
+        } else {
+            trimmed.to_string()
+        };
+
+        let path = std::path::PathBuf::from(&path_str);
+
+        // Reject paths containing traversal components
+        for component in path.components() {
+            if matches!(component, std::path::Component::ParentDir) {
+                self.set_clipboard_toast("Save failed: path must not contain '..' traversal");
+                return;
+            }
+        }
+
+        // Resolve to an absolute path so we can validate the final location
+        let resolved = if path.is_absolute() {
+            path.clone()
+        } else {
+            match std::env::current_dir() {
+                Ok(cwd) => cwd.join(&path),
+                Err(_) => {
+                    self.set_clipboard_toast("Save failed: could not determine working directory");
+                    return;
+                }
+            }
+        };
+
+        // Validate parent directory exists
+        if let Some(parent) = resolved.parent() {
+            if !parent.as_os_str().is_empty() && !parent.exists() {
+                self.set_clipboard_toast("Save failed: directory does not exist");
+                return;
+            }
+        }
+
+        // Canonicalize the parent to catch symlink-based traversal, then re-append filename
+        let canonical_path = if let Some(parent) = resolved.parent() {
+            if parent.as_os_str().is_empty() {
+                resolved.clone()
+            } else {
+                match parent.canonicalize() {
+                    Ok(canon_parent) => match resolved.file_name() {
+                        Some(name) => canon_parent.join(name),
+                        None => canon_parent,
+                    },
+                    Err(err) => {
+                        self.set_clipboard_toast(format!("Save failed: {}", err));
+                        return;
+                    }
+                }
+            }
+        } else {
+            resolved.clone()
+        };
+
+        if !matches!(self.response, ResponseStatus::Success(_)) {
+            self.set_clipboard_toast("No response to save");
+            return;
+        }
+
+        let content = match self.response_tab {
+            ResponseTab::Body => self.response_editor.lines().join("\n"),
+            ResponseTab::Headers => self.response_headers_editor.lines().join("\n"),
+        };
+
+        match std::fs::write(&canonical_path, &content) {
+            Ok(_) => {
+                let size = format_size(content.len());
+                self.set_clipboard_toast(format!("Saved to {} ({})", trimmed, size));
+            }
+            Err(err) => {
+                self.set_clipboard_toast(format!("Save failed: {}", err));
+            }
         }
     }
 
@@ -2339,6 +2664,57 @@ impl App {
         }
     }
 
+    /// Toggle the environment quick-switch popup, closing any other open popups first.
+    /// If the popup is being opened, pre-selects the currently active environment.
+    fn toggle_env_popup(&mut self) {
+        self.show_method_popup = false;
+        self.show_auth_type_popup = false;
+        self.show_body_mode_popup = false;
+        self.show_env_popup = !self.show_env_popup;
+        if self.show_env_popup {
+            self.env_popup_index = self
+                .active_environment_name
+                .as_ref()
+                .and_then(|name| self.environments.iter().position(|e| e.name == *name))
+                .map(|i| i + 1)
+                .unwrap_or(0);
+        }
+        self.dirty = true;
+    }
+
+    /// Handle keyboard input when the environment popup is open.
+    /// Returns `true` if the key was consumed by the popup, `false` otherwise.
+    fn handle_env_popup_input(&mut self, key: KeyEvent) -> bool {
+        if !self.show_env_popup {
+            return false;
+        }
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                let count = self.environments.len() + 1; // +1 for "No Environment"
+                self.env_popup_index = (self.env_popup_index + 1) % count;
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                let count = self.environments.len() + 1;
+                self.env_popup_index =
+                    (self.env_popup_index + count - 1) % count;
+            }
+            KeyCode::Enter => {
+                self.active_environment_name = if self.env_popup_index == 0 {
+                    None
+                } else {
+                    Some(self.environments[self.env_popup_index - 1].name.clone())
+                };
+                self.show_env_popup = false;
+            }
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.show_env_popup = false;
+            }
+            _ => {}
+        }
+        self.dirty = true;
+        true
+    }
+
     fn sync_clipboard_from_active_yank(&mut self) {
         let mut new_yank: Option<String> = None;
         match self.focus.panel {
@@ -2371,7 +2747,7 @@ impl App {
         }
 
         if let Some(yank) = new_yank {
-            if let Err(_) = self.clipboard.set_text(yank) {
+            if self.clipboard.set_text(yank).is_err() {
                 self.set_clipboard_toast("Clipboard write failed");
             }
         }
@@ -2530,7 +2906,7 @@ impl App {
 
         if let Some(text) = yank {
             self.update_last_yank(target, text.clone());
-            if let Err(_) = self.clipboard.set_text(text) {
+            if self.clipboard.set_text(text).is_err() {
                 self.set_clipboard_toast("Clipboard write failed");
             }
         }
@@ -2761,6 +3137,7 @@ impl App {
                         self.response_body_cache.dirty = true;
                         self.response_headers_cache.dirty = true;
                     }
+                    self.response_search.clear();
                     self.dirty = true;
                 }
                 self.request_handle = None;
@@ -2842,31 +3219,7 @@ impl App {
         }
 
         // Handle environment popup when open
-        if self.show_env_popup {
-            match key.code {
-                KeyCode::Char('j') | KeyCode::Down => {
-                    let count = self.environments.len() + 1; // +1 for "No Environment"
-                    self.env_popup_index = (self.env_popup_index + 1) % count;
-                }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    let count = self.environments.len() + 1;
-                    self.env_popup_index =
-                        (self.env_popup_index + count - 1) % count;
-                }
-                KeyCode::Enter => {
-                    self.active_environment_name = if self.env_popup_index == 0 {
-                        None
-                    } else {
-                        Some(self.environments[self.env_popup_index - 1].name.clone())
-                    };
-                    self.show_env_popup = false;
-                }
-                KeyCode::Esc | KeyCode::Char('q') => {
-                    self.show_env_popup = false;
-                }
-                _ => {}
-            }
-            self.dirty = true;
+        if self.handle_env_popup_input(key) {
             return;
         }
 
@@ -2946,6 +3299,26 @@ impl App {
                         self.show_method_popup = false;
                     }
                     _ => {}
+                }
+            }
+            return;
+        }
+
+        // Handle save popup when open
+        if let Some(ref mut input) = self.save_popup {
+            match key.code {
+                KeyCode::Enter => {
+                    let path = input.value.clone();
+                    self.save_popup = None;
+                    if !path.trim().is_empty() {
+                        self.save_response_to_file(path.trim());
+                    }
+                }
+                KeyCode::Esc => {
+                    self.save_popup = None;
+                }
+                _ => {
+                    handle_text_input(input, key);
                 }
             }
             return;
@@ -3031,19 +3404,7 @@ impl App {
 
         // Ctrl+N: environment quick-switch popup
         if key.code == KeyCode::Char('n') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            self.show_method_popup = false;
-            self.show_auth_type_popup = false;
-            self.show_body_mode_popup = false;
-            self.show_env_popup = !self.show_env_popup;
-            if self.show_env_popup {
-                self.env_popup_index = self
-                    .active_environment_name
-                    .as_ref()
-                    .and_then(|name| self.environments.iter().position(|e| e.name == *name))
-                    .map(|i| i + 1)
-                    .unwrap_or(0);
-            }
-            self.dirty = true;
+            self.toggle_env_popup();
             return;
         }
 
@@ -3161,6 +3522,25 @@ impl App {
             _ => {}
         }
 
+        // Response-specific shortcuts
+        if in_response && key.modifiers.is_empty() {
+            match key.code {
+                KeyCode::Char('c') => {
+                    self.copy_response_content();
+                    return;
+                }
+                KeyCode::Char('S') => {
+                    if matches!(self.response, ResponseStatus::Success(_)) {
+                        self.save_popup = Some(TextInput::new(String::new()));
+                    } else {
+                        self.set_clipboard_toast("No response to save");
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         match key.code {
             KeyCode::Char('?') => {
                 self.show_help = !self.show_help;
@@ -3214,11 +3594,10 @@ impl App {
                     self.app_mode = AppMode::Sidebar;
                 } else if in_request && self.focus.request_field == RequestField::Body {
                     self.handle_body_enter();
-                } else if in_request && self.is_editable_field() {
-                    self.enter_editing(VimMode::Insert);
                 } else if in_request
-                    && self.focus.request_field == RequestField::Auth
-                    && self.is_auth_text_field()
+                    && (self.is_editable_field()
+                        || (self.focus.request_field == RequestField::Auth
+                            && self.is_auth_text_field()))
                 {
                     self.enter_editing(VimMode::Insert);
                 } else if in_response
@@ -3244,21 +3623,14 @@ impl App {
             return;
         }
 
+        // Handle environment popup when open
+        if self.handle_env_popup_input(key) {
+            return;
+        }
+
         // Ctrl+N: environment quick-switch popup from sidebar mode
         if key.code == KeyCode::Char('n') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            self.show_method_popup = false;
-            self.show_auth_type_popup = false;
-            self.show_body_mode_popup = false;
-            self.show_env_popup = !self.show_env_popup;
-            if self.show_env_popup {
-                self.env_popup_index = self
-                    .active_environment_name
-                    .as_ref()
-                    .and_then(|name| self.environments.iter().position(|e| e.name == *name))
-                    .map(|i| i + 1)
-                    .unwrap_or(0);
-            }
-            self.dirty = true;
+            self.toggle_env_popup();
             return;
         }
 
@@ -3286,6 +3658,11 @@ impl App {
         key: KeyEvent,
         tx: mpsc::Sender<Result<ResponseData, String>>,
     ) {
+        // Handle environment popup when open
+        if self.handle_env_popup_input(key) {
+            return;
+        }
+
         // Ctrl+S: save current request
         if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
             if let Some(request_id) = self.current_request_id {
@@ -3310,19 +3687,7 @@ impl App {
 
         // Ctrl+N: environment quick-switch popup, even in editing mode
         if key.code == KeyCode::Char('n') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            self.show_method_popup = false;
-            self.show_auth_type_popup = false;
-            self.show_body_mode_popup = false;
-            self.show_env_popup = !self.show_env_popup;
-            if self.show_env_popup {
-                self.env_popup_index = self
-                    .active_environment_name
-                    .as_ref()
-                    .and_then(|name| self.environments.iter().position(|e| e.name == *name))
-                    .map(|i| i + 1)
-                    .unwrap_or(0);
-            }
-            self.dirty = true;
+            self.toggle_env_popup();
             return;
         }
 
@@ -3379,13 +3744,75 @@ impl App {
             }
         }
 
+        // Response search: intercept keys when search bar is active
+        if is_response && self.response_search.active {
+            match key.code {
+                KeyCode::Enter => {
+                    self.response_search.active = false;
+                    if self.response_search.input.value.is_empty() {
+                        // Empty Enter: clear search
+                        self.response_search.clear();
+                    } else {
+                        self.response_search.query = self.response_search.input.value.clone();
+                    }
+                }
+                KeyCode::Esc => {
+                    self.response_search.clear();
+                }
+                KeyCode::Char('i')
+                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    self.response_search.case_sensitive = !self.response_search.case_sensitive;
+                    let body_text = self.response_body_cache.body_text.clone();
+                    let gen = self.response_body_cache.generation;
+                    self.response_search.compute_matches(&body_text, gen);
+                }
+                _ => {
+                    handle_text_input(&mut self.response_search.input, key);
+                    let body_text = self.response_body_cache.body_text.clone();
+                    let gen = self.response_body_cache.generation;
+                    self.response_search.compute_matches(&body_text, gen);
+                }
+            }
+            // Auto-scroll to current match
+            self.scroll_to_search_match();
+            return;
+        }
+
+        // Response search: '/' activates search, 'n'/'N' navigate matches
+        if is_response
+            && self.response_tab == ResponseTab::Body
+            && self.vim.mode == VimMode::Normal
+            && key.modifiers.is_empty()
+        {
+            match key.code {
+                KeyCode::Char('/') => {
+                    self.response_search.active = true;
+                    self.response_search.input = TextInput::new(
+                        self.response_search.query.clone(),
+                    );
+                    self.response_search.input.cursor = self.response_search.input.char_count();
+                    return;
+                }
+                KeyCode::Char('n') if !self.response_search.query.is_empty() => {
+                    self.response_search.next_match();
+                    self.scroll_to_search_match();
+                    return;
+                }
+                KeyCode::Char('N') if !self.response_search.query.is_empty() => {
+                    self.response_search.prev_match();
+                    self.scroll_to_search_match();
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         let is_clipboard_modifier = key.modifiers.contains(KeyModifiers::CONTROL)
             || key.modifiers.contains(KeyModifiers::SUPER);
 
-        if is_request {
-            if key.code != KeyCode::Esc {
-                self.request_dirty = true;
-            }
+        if is_request && key.code != KeyCode::Esc {
+            self.request_dirty = true;
         }
 
         if is_clipboard_modifier && matches!(key.code, KeyCode::Char('v') | KeyCode::Char('V')) {
@@ -3482,13 +3909,15 @@ impl App {
                 } else if let Some(textarea) = self.kv_edit_textarea.as_mut() {
                     self.vim = std::mem::replace(&mut self.vim, Vim::new(VimMode::Normal))
                         .apply_transition(Transition::Mode(new_mode), textarea);
-                } else {
-                    let textarea = self
-                        .request
-                        .active_editor(self.focus.request_field, self.focus.body_field)
-                        .unwrap();
+                } else if let Some(textarea) = self
+                    .request
+                    .active_editor(self.focus.request_field, self.focus.body_field)
+                {
                     self.vim = std::mem::replace(&mut self.vim, Vim::new(VimMode::Normal))
                         .apply_transition(Transition::Mode(new_mode), textarea);
+                } else {
+                    self.exit_editing();
+                    return;
                 }
                 self.update_terminal_cursor();
                 self.sync_clipboard_from_active_yank();
@@ -3511,13 +3940,14 @@ impl App {
                 } else if let Some(textarea) = self.kv_edit_textarea.as_mut() {
                     self.vim = std::mem::replace(&mut self.vim, Vim::new(VimMode::Normal))
                         .apply_transition(Transition::Pending(pending_input), textarea);
-                } else {
-                    let textarea = self
-                        .request
-                        .active_editor(self.focus.request_field, self.focus.body_field)
-                        .unwrap();
+                } else if let Some(textarea) = self
+                    .request
+                    .active_editor(self.focus.request_field, self.focus.body_field)
+                {
                     self.vim = std::mem::replace(&mut self.vim, Vim::new(VimMode::Normal))
                         .apply_transition(Transition::Pending(pending_input), textarea);
+                } else {
+                    self.exit_editing();
                 }
             }
             Transition::Nop => {}
@@ -4311,7 +4741,7 @@ impl App {
         if self.focus.request_field == RequestField::Auth {
             self.active_auth_editor()
         } else {
-            self.active_request_editor()
+            self.request.active_editor(self.focus.request_field, self.focus.body_field)
         }
     }
 }
@@ -4397,7 +4827,7 @@ fn handle_text_input(input: &mut TextInput, key: KeyEvent) {
         KeyCode::Left => input.move_left(),
         KeyCode::Right => input.move_right(),
         KeyCode::Home => input.cursor = 0,
-        KeyCode::End => input.cursor = input.value.len(),
+        KeyCode::End => input.cursor = input.char_count(),
         _ => {}
     }
 }
@@ -4424,5 +4854,668 @@ fn parse_add_path(raw: &str) -> (Vec<String>, Option<String>) {
         let mut folders = parts.clone();
         let request = folders.pop();
         (folders, request)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // format_size
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn format_size_zero_bytes() {
+        assert_eq!(format_size(0), "0 B");
+    }
+
+    #[test]
+    fn format_size_small_bytes() {
+        assert_eq!(format_size(1), "1 B");
+        assert_eq!(format_size(500), "500 B");
+        assert_eq!(format_size(1023), "1023 B");
+    }
+
+    #[test]
+    fn format_size_exact_one_kb() {
+        assert_eq!(format_size(1024), "1.0 KB");
+    }
+
+    #[test]
+    fn format_size_fractional_kb() {
+        assert_eq!(format_size(1536), "1.5 KB");
+    }
+
+    #[test]
+    fn format_size_large_kb() {
+        // 500 KB = 512000 bytes
+        assert_eq!(format_size(512_000), "500.0 KB");
+    }
+
+    #[test]
+    fn format_size_exact_one_mb() {
+        assert_eq!(format_size(1_048_576), "1.0 MB");
+    }
+
+    #[test]
+    fn format_size_fractional_mb() {
+        // 1.5 MB = 1_572_864 bytes
+        assert_eq!(format_size(1_572_864), "1.5 MB");
+    }
+
+    #[test]
+    fn format_size_exact_one_gb() {
+        assert_eq!(format_size(1_073_741_824), "1.0 GB");
+    }
+
+    #[test]
+    fn format_size_fractional_gb() {
+        // 2.5 GB = 2_684_354_560 bytes
+        assert_eq!(format_size(2_684_354_560), "2.5 GB");
+    }
+
+    #[test]
+    fn format_size_boundary_below_kb() {
+        // 1023 bytes is still in the bytes range
+        assert_eq!(format_size(1023), "1023 B");
+    }
+
+    // -----------------------------------------------------------------------
+    // is_json_content
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn is_json_content_with_json_content_type() {
+        let headers = vec![
+            ("Content-Type".to_string(), "application/json".to_string()),
+        ];
+        assert!(is_json_content(&headers, ""));
+    }
+
+    #[test]
+    fn is_json_content_with_json_content_type_charset() {
+        let headers = vec![(
+            "Content-Type".to_string(),
+            "application/json; charset=utf-8".to_string(),
+        )];
+        assert!(is_json_content(&headers, "not json body"));
+    }
+
+    #[test]
+    fn is_json_content_case_insensitive_header_key() {
+        let headers = vec![
+            ("content-type".to_string(), "application/json".to_string()),
+        ];
+        assert!(is_json_content(&headers, ""));
+    }
+
+    #[test]
+    fn is_json_content_case_insensitive_header_value() {
+        let headers = vec![
+            ("Content-Type".to_string(), "APPLICATION/JSON".to_string()),
+        ];
+        assert!(is_json_content(&headers, ""));
+    }
+
+    #[test]
+    fn is_json_content_no_header_body_object() {
+        let headers: Vec<(String, String)> = vec![];
+        assert!(is_json_content(&headers, r#"{"key": "value"}"#));
+    }
+
+    #[test]
+    fn is_json_content_no_header_body_array() {
+        let headers: Vec<(String, String)> = vec![];
+        assert!(is_json_content(&headers, "[1, 2, 3]"));
+    }
+
+    #[test]
+    fn is_json_content_body_with_whitespace() {
+        let headers: Vec<(String, String)> = vec![];
+        assert!(is_json_content(&headers, "  { \"a\": 1 }  "));
+    }
+
+    #[test]
+    fn is_json_content_empty_body_no_header() {
+        let headers: Vec<(String, String)> = vec![];
+        assert!(!is_json_content(&headers, ""));
+    }
+
+    #[test]
+    fn is_json_content_plain_text_body() {
+        let headers: Vec<(String, String)> = vec![];
+        assert!(!is_json_content(&headers, "hello world"));
+    }
+
+    #[test]
+    fn is_json_content_html_body() {
+        let headers = vec![
+            ("Content-Type".to_string(), "text/html".to_string()),
+        ];
+        assert!(!is_json_content(&headers, "<html></html>"));
+    }
+
+    #[test]
+    fn is_json_content_mismatched_braces() {
+        let headers: Vec<(String, String)> = vec![];
+        // Starts with { but ends with ]
+        assert!(!is_json_content(&headers, "{data]"));
+    }
+
+    #[test]
+    fn is_json_content_mismatched_brackets() {
+        let headers: Vec<(String, String)> = vec![];
+        // Starts with [ but ends with }
+        assert!(!is_json_content(&headers, "[data}"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Method FromStr
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn method_from_str_get() {
+        let m: Method = "GET".parse().unwrap();
+        assert_eq!(m, Method::Standard(HttpMethod::Get));
+    }
+
+    #[test]
+    fn method_from_str_post() {
+        let m: Method = "POST".parse().unwrap();
+        assert_eq!(m, Method::Standard(HttpMethod::Post));
+    }
+
+    #[test]
+    fn method_from_str_put() {
+        let m: Method = "PUT".parse().unwrap();
+        assert_eq!(m, Method::Standard(HttpMethod::Put));
+    }
+
+    #[test]
+    fn method_from_str_patch() {
+        let m: Method = "PATCH".parse().unwrap();
+        assert_eq!(m, Method::Standard(HttpMethod::Patch));
+    }
+
+    #[test]
+    fn method_from_str_delete() {
+        let m: Method = "DELETE".parse().unwrap();
+        assert_eq!(m, Method::Standard(HttpMethod::Delete));
+    }
+
+    #[test]
+    fn method_from_str_head() {
+        let m: Method = "HEAD".parse().unwrap();
+        assert_eq!(m, Method::Standard(HttpMethod::Head));
+    }
+
+    #[test]
+    fn method_from_str_options() {
+        let m: Method = "OPTIONS".parse().unwrap();
+        assert_eq!(m, Method::Standard(HttpMethod::Options));
+    }
+
+    #[test]
+    fn method_from_str_case_insensitive() {
+        let m: Method = "get".parse().unwrap();
+        assert_eq!(m, Method::Standard(HttpMethod::Get));
+
+        let m: Method = "Post".parse().unwrap();
+        assert_eq!(m, Method::Standard(HttpMethod::Post));
+
+        let m: Method = "dElEtE".parse().unwrap();
+        assert_eq!(m, Method::Standard(HttpMethod::Delete));
+    }
+
+    #[test]
+    fn method_from_str_custom_method() {
+        let m: Method = "PURGE".parse().unwrap();
+        assert_eq!(m, Method::Custom("PURGE".to_string()));
+    }
+
+    #[test]
+    fn method_from_str_custom_method_uppercased() {
+        let m: Method = "purge".parse().unwrap();
+        // Custom methods are stored in uppercase
+        assert_eq!(m, Method::Custom("PURGE".to_string()));
+    }
+
+    #[test]
+    fn method_as_str_standard() {
+        let m = Method::Standard(HttpMethod::Get);
+        assert_eq!(m.as_str(), "GET");
+    }
+
+    #[test]
+    fn method_as_str_custom() {
+        let m = Method::Custom("PURGE".to_string());
+        assert_eq!(m.as_str(), "PURGE");
+    }
+
+    // -----------------------------------------------------------------------
+    // TextInput
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn text_input_new_empty() {
+        let ti = TextInput::new(String::new());
+        assert_eq!(ti.value, "");
+        assert_eq!(ti.cursor, 0);
+        assert_eq!(ti.char_count(), 0);
+    }
+
+    #[test]
+    fn text_input_new_with_value() {
+        let ti = TextInput::new("hello".to_string());
+        assert_eq!(ti.value, "hello");
+        // Cursor starts at end
+        assert_eq!(ti.cursor, 5);
+        assert_eq!(ti.char_count(), 5);
+    }
+
+    #[test]
+    fn text_input_new_unicode() {
+        // Each emoji is one char but multiple bytes
+        let ti = TextInput::new("cafe\u{0301}".to_string());
+        // "cafe\u{0301}" has 5 chars (c, a, f, e, combining acute)
+        assert_eq!(ti.char_count(), 5);
+        assert_eq!(ti.cursor, 5);
+    }
+
+    #[test]
+    fn text_input_insert_char_at_end() {
+        let mut ti = TextInput::new("ab".to_string());
+        ti.insert_char('c');
+        assert_eq!(ti.value, "abc");
+        assert_eq!(ti.cursor, 3);
+    }
+
+    #[test]
+    fn text_input_insert_char_at_beginning() {
+        let mut ti = TextInput::new("bc".to_string());
+        ti.cursor = 0;
+        ti.insert_char('a');
+        assert_eq!(ti.value, "abc");
+        assert_eq!(ti.cursor, 1);
+    }
+
+    #[test]
+    fn text_input_insert_char_in_middle() {
+        let mut ti = TextInput::new("ac".to_string());
+        ti.cursor = 1;
+        ti.insert_char('b');
+        assert_eq!(ti.value, "abc");
+        assert_eq!(ti.cursor, 2);
+    }
+
+    #[test]
+    fn text_input_insert_unicode_char() {
+        let mut ti = TextInput::new(String::new());
+        ti.insert_char('\u{1F600}'); // grinning face emoji
+        assert_eq!(ti.value, "\u{1F600}");
+        assert_eq!(ti.cursor, 1);
+        assert_eq!(ti.char_count(), 1);
+    }
+
+    #[test]
+    fn text_input_backspace_at_end() {
+        let mut ti = TextInput::new("abc".to_string());
+        ti.backspace();
+        assert_eq!(ti.value, "ab");
+        assert_eq!(ti.cursor, 2);
+    }
+
+    #[test]
+    fn text_input_backspace_at_beginning() {
+        let mut ti = TextInput::new("abc".to_string());
+        ti.cursor = 0;
+        ti.backspace();
+        // No change when at beginning
+        assert_eq!(ti.value, "abc");
+        assert_eq!(ti.cursor, 0);
+    }
+
+    #[test]
+    fn text_input_backspace_in_middle() {
+        let mut ti = TextInput::new("abc".to_string());
+        ti.cursor = 2;
+        ti.backspace();
+        assert_eq!(ti.value, "ac");
+        assert_eq!(ti.cursor, 1);
+    }
+
+    #[test]
+    fn text_input_delete_at_cursor() {
+        let mut ti = TextInput::new("abc".to_string());
+        ti.cursor = 1;
+        ti.delete();
+        assert_eq!(ti.value, "ac");
+        assert_eq!(ti.cursor, 1);
+    }
+
+    #[test]
+    fn text_input_delete_at_end() {
+        let mut ti = TextInput::new("abc".to_string());
+        // Cursor at end, delete should be no-op
+        ti.delete();
+        assert_eq!(ti.value, "abc");
+        assert_eq!(ti.cursor, 3);
+    }
+
+    #[test]
+    fn text_input_delete_at_beginning() {
+        let mut ti = TextInput::new("abc".to_string());
+        ti.cursor = 0;
+        ti.delete();
+        assert_eq!(ti.value, "bc");
+        assert_eq!(ti.cursor, 0);
+    }
+
+    #[test]
+    fn text_input_move_left() {
+        let mut ti = TextInput::new("abc".to_string());
+        assert_eq!(ti.cursor, 3);
+        ti.move_left();
+        assert_eq!(ti.cursor, 2);
+        ti.move_left();
+        assert_eq!(ti.cursor, 1);
+        ti.move_left();
+        assert_eq!(ti.cursor, 0);
+        // Should not go below 0
+        ti.move_left();
+        assert_eq!(ti.cursor, 0);
+    }
+
+    #[test]
+    fn text_input_move_right() {
+        let mut ti = TextInput::new("abc".to_string());
+        ti.cursor = 0;
+        ti.move_right();
+        assert_eq!(ti.cursor, 1);
+        ti.move_right();
+        assert_eq!(ti.cursor, 2);
+        ti.move_right();
+        assert_eq!(ti.cursor, 3);
+        // Should not go beyond char count
+        ti.move_right();
+        assert_eq!(ti.cursor, 3);
+    }
+
+    #[test]
+    fn text_input_byte_offset_ascii() {
+        let ti = TextInput::new("abc".to_string());
+        // Cursor at 3 (end), byte offset is 3
+        assert_eq!(ti.byte_offset(), 3);
+    }
+
+    #[test]
+    fn text_input_byte_offset_unicode() {
+        // "\u{1F600}" is 4 bytes, "ab" is 2 bytes
+        let mut ti = TextInput::new("\u{1F600}ab".to_string());
+        ti.cursor = 0;
+        assert_eq!(ti.byte_offset(), 0);
+        ti.cursor = 1; // After emoji
+        assert_eq!(ti.byte_offset(), 4);
+        ti.cursor = 2; // After emoji + 'a'
+        assert_eq!(ti.byte_offset(), 5);
+        ti.cursor = 3; // After emoji + 'ab'
+        assert_eq!(ti.byte_offset(), 6);
+    }
+
+    #[test]
+    fn text_input_insert_into_unicode_string() {
+        let mut ti = TextInput::new("\u{1F600}b".to_string());
+        ti.cursor = 1; // After emoji, before 'b'
+        ti.insert_char('a');
+        assert_eq!(ti.value, "\u{1F600}ab");
+        assert_eq!(ti.cursor, 2);
+    }
+
+    #[test]
+    fn text_input_backspace_unicode_char() {
+        let mut ti = TextInput::new("a\u{1F600}b".to_string());
+        ti.cursor = 2; // After emoji
+        ti.backspace();
+        assert_eq!(ti.value, "ab");
+        assert_eq!(ti.cursor, 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // ResponseSearch::compute_matches - case sensitive
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn search_case_sensitive_single_match() {
+        let mut search = ResponseSearch::new();
+        search.case_sensitive = true;
+        search.input = TextInput::new("hello".to_string());
+        search.compute_matches("hello world", 1);
+        assert_eq!(search.matches.len(), 1);
+        assert_eq!(search.matches[0].line_index, 0);
+        assert_eq!(search.matches[0].byte_start, 0);
+        assert_eq!(search.matches[0].byte_end, 5);
+    }
+
+    #[test]
+    fn search_case_sensitive_multiple_matches() {
+        let mut search = ResponseSearch::new();
+        search.case_sensitive = true;
+        search.input = TextInput::new("ab".to_string());
+        search.compute_matches("ab cd ab ef ab", 1);
+        assert_eq!(search.matches.len(), 3);
+        assert_eq!(search.matches[0].byte_start, 0);
+        assert_eq!(search.matches[1].byte_start, 6);
+        assert_eq!(search.matches[2].byte_start, 12);
+    }
+
+    #[test]
+    fn search_case_sensitive_no_match() {
+        let mut search = ResponseSearch::new();
+        search.case_sensitive = true;
+        search.input = TextInput::new("Hello".to_string());
+        search.compute_matches("hello world", 1);
+        assert_eq!(search.matches.len(), 0);
+    }
+
+    #[test]
+    fn search_case_sensitive_empty_query() {
+        let mut search = ResponseSearch::new();
+        search.case_sensitive = true;
+        search.input = TextInput::new(String::new());
+        search.compute_matches("hello world", 1);
+        assert_eq!(search.matches.len(), 0);
+    }
+
+    #[test]
+    fn search_case_sensitive_empty_text() {
+        let mut search = ResponseSearch::new();
+        search.case_sensitive = true;
+        search.input = TextInput::new("hello".to_string());
+        search.compute_matches("", 1);
+        assert_eq!(search.matches.len(), 0);
+    }
+
+    #[test]
+    fn search_case_sensitive_multiline() {
+        let mut search = ResponseSearch::new();
+        search.case_sensitive = true;
+        search.input = TextInput::new("foo".to_string());
+        search.compute_matches("line1 foo\nline2\nline3 foo bar", 1);
+        assert_eq!(search.matches.len(), 2);
+        // First match: line 0, byte offset 6
+        assert_eq!(search.matches[0].line_index, 0);
+        assert_eq!(search.matches[0].byte_start, 6);
+        assert_eq!(search.matches[0].byte_end, 9);
+        // Second match: line 2, byte offset 6
+        assert_eq!(search.matches[1].line_index, 2);
+        assert_eq!(search.matches[1].byte_start, 6);
+        assert_eq!(search.matches[1].byte_end, 9);
+    }
+
+    // -----------------------------------------------------------------------
+    // ResponseSearch::compute_matches - case insensitive
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn search_case_insensitive_basic() {
+        let mut search = ResponseSearch::new();
+        search.case_sensitive = false;
+        search.input = TextInput::new("hello".to_string());
+        search.compute_matches("Hello World HELLO", 1);
+        assert_eq!(search.matches.len(), 2);
+    }
+
+    #[test]
+    fn search_case_insensitive_mixed_case_query() {
+        let mut search = ResponseSearch::new();
+        search.case_sensitive = false;
+        search.input = TextInput::new("HeLLo".to_string());
+        search.compute_matches("hello HELLO Hello", 1);
+        assert_eq!(search.matches.len(), 3);
+    }
+
+    #[test]
+    fn search_case_insensitive_no_match() {
+        let mut search = ResponseSearch::new();
+        search.case_sensitive = false;
+        search.input = TextInput::new("xyz".to_string());
+        search.compute_matches("hello world", 1);
+        assert_eq!(search.matches.len(), 0);
+    }
+
+    #[test]
+    fn search_case_insensitive_empty_query() {
+        let mut search = ResponseSearch::new();
+        search.case_sensitive = false;
+        search.input = TextInput::new(String::new());
+        search.compute_matches("hello world", 1);
+        assert_eq!(search.matches.len(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // ResponseSearch::compute_matches - caching behavior
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn search_caching_same_generation_skips_recompute() {
+        let mut search = ResponseSearch::new();
+        search.case_sensitive = true;
+        search.input = TextInput::new("a".to_string());
+        search.compute_matches("a b a", 1);
+        assert_eq!(search.matches.len(), 2);
+
+        // Manually clear matches to detect if recomputation occurs
+        search.matches.clear();
+        search.compute_matches("a b a", 1);
+        // Should still be empty because cache hit prevents recompute
+        assert_eq!(search.matches.len(), 0);
+    }
+
+    #[test]
+    fn search_caching_different_generation_recomputes() {
+        let mut search = ResponseSearch::new();
+        search.case_sensitive = true;
+        search.input = TextInput::new("a".to_string());
+        search.compute_matches("a b a", 1);
+        assert_eq!(search.matches.len(), 2);
+
+        search.matches.clear();
+        // Different body_generation forces recomputation
+        search.compute_matches("a b a", 2);
+        assert_eq!(search.matches.len(), 2);
+    }
+
+    #[test]
+    fn search_caching_different_query_recomputes() {
+        let mut search = ResponseSearch::new();
+        search.case_sensitive = true;
+        search.input = TextInput::new("a".to_string());
+        search.compute_matches("a b c", 1);
+        assert_eq!(search.matches.len(), 1);
+
+        // Change query
+        search.input = TextInput::new("b".to_string());
+        search.compute_matches("a b c", 1);
+        assert_eq!(search.matches.len(), 1);
+        assert_eq!(search.matches[0].byte_start, 2);
+    }
+
+    #[test]
+    fn search_caching_case_sensitivity_change_recomputes() {
+        let mut search = ResponseSearch::new();
+        search.case_sensitive = true;
+        search.input = TextInput::new("a".to_string());
+        search.compute_matches("A a A", 1);
+        // Case sensitive: only lowercase 'a' matches
+        assert_eq!(search.matches.len(), 1);
+
+        // Toggle case sensitivity
+        search.case_sensitive = false;
+        search.compute_matches("A a A", 1);
+        // Case insensitive: all 'a'/'A' match
+        assert_eq!(search.matches.len(), 3);
+    }
+
+    // -----------------------------------------------------------------------
+    // ResponseSearch::compute_matches - Unicode
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn search_case_sensitive_unicode_at_end() {
+        let mut search = ResponseSearch::new();
+        search.case_sensitive = true;
+        // Search for a multibyte emoji at the end of the text so the
+        // byte-level `start += 1` advance after the match does not land
+        // inside a multibyte char (there is nothing left to search).
+        search.input = TextInput::new("\u{1F600}".to_string());
+        search.compute_matches("hello \u{1F600}", 1);
+        assert_eq!(search.matches.len(), 1);
+        assert_eq!(search.matches[0].line_index, 0);
+        // "hello " is 6 bytes, emoji starts at byte 6
+        assert_eq!(search.matches[0].byte_start, 6);
+        // Emoji is 4 bytes
+        assert_eq!(search.matches[0].byte_end, 10);
+    }
+
+    #[test]
+    fn search_case_sensitive_ascii_after_unicode() {
+        let mut search = ResponseSearch::new();
+        search.case_sensitive = true;
+        // Search for an ASCII pattern that appears after a multibyte char.
+        // The case-sensitive path uses byte-level find, so searching for
+        // ASCII content is safe regardless of preceding multibyte chars.
+        search.input = TextInput::new("world".to_string());
+        search.compute_matches("\u{1F600} world", 1);
+        assert_eq!(search.matches.len(), 1);
+        // "\u{1F600} " is 5 bytes (4 byte emoji + 1 space)
+        assert_eq!(search.matches[0].byte_start, 5);
+        assert_eq!(search.matches[0].byte_end, 10);
+    }
+
+    #[test]
+    fn search_case_insensitive_unicode_text() {
+        let mut search = ResponseSearch::new();
+        search.case_sensitive = false;
+        search.input = TextInput::new("\u{00FC}".to_string()); // u-umlaut
+        search.compute_matches("gr\u{00FC}n and GR\u{00DC}N", 1);
+        // \u{00FC} lowercases to itself; \u{00DC} lowercases to \u{00FC}
+        assert_eq!(search.matches.len(), 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // ResponseSearch::compute_matches - overlapping patterns
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn search_case_sensitive_overlapping() {
+        let mut search = ResponseSearch::new();
+        search.case_sensitive = true;
+        search.input = TextInput::new("aa".to_string());
+        search.compute_matches("aaa", 1);
+        // "aaa" contains "aa" at position 0 and position 1
+        assert_eq!(search.matches.len(), 2);
+        assert_eq!(search.matches[0].byte_start, 0);
+        assert_eq!(search.matches[1].byte_start, 1);
     }
 }
