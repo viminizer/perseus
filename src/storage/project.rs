@@ -52,3 +52,18 @@ pub fn requests_dir() -> Option<PathBuf> {
 pub fn ui_state_path() -> Option<PathBuf> {
     storage_dir().map(|root| root.join("ui.json"))
 }
+
+pub fn environments_dir() -> Option<PathBuf> {
+    storage_dir().map(|root| root.join("environments"))
+}
+
+/// Create the environments directory if it doesn't exist. Used by `save_environment`.
+#[allow(dead_code)]
+pub fn ensure_environments_dir() -> Result<PathBuf, String> {
+    let dir = environments_dir().ok_or(
+        "Could not find project root. Run from a directory with .git, Cargo.toml, package.json, or create a .perseus folder.",
+    )?;
+    fs::create_dir_all(&dir)
+        .map_err(|e| format!("Failed to create environments directory: {}", e))?;
+    Ok(dir)
+}

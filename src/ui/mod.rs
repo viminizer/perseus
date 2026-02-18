@@ -1,7 +1,7 @@
 mod layout;
 mod widgets;
 
-use layout::{AppLayout, RequestInputLayout, RequestLayout, ResponseLayout};
+use layout::{AppLayout, BodyLayout, RequestInputLayout, RequestLayout, ResponseLayout};
 use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -13,8 +13,10 @@ use tui_textarea::TextArea;
 use unicode_width::UnicodeWidthChar;
 
 use crate::app::{
-    App, AppMode, HttpMethod, Method, Panel, RequestField, RequestTab, ResponseBodyRenderCache,
-    ResponseHeadersRenderCache, ResponseStatus, ResponseTab, SidebarPopup, WrapCache,
+    format_size, is_json_content, App, AppMode, AuthField, AuthType, BodyField, BodyMode,
+    HttpMethod, KvColumn, KvFocus, KvPair, Method, MultipartField, MultipartFieldType, Panel,
+    RequestField, RequestTab, ResponseBodyRenderCache, ResponseHeadersRenderCache, ResponseSearch,
+    ResponseStatus, ResponseTab, SearchMatch, SidebarPopup, WrapCache,
 };
 use crate::perf;
 use crate::storage::NodeKind;
@@ -36,6 +38,22 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     if app.show_method_popup {
         render_method_popup(frame, app, input_layout.method_area);
+    }
+
+    if app.show_body_mode_popup {
+        render_body_mode_popup(frame, app, request_split[1]);
+    }
+
+    if app.show_auth_type_popup {
+        render_auth_type_popup(frame, app, request_split[1]);
+    }
+
+    if app.show_env_popup {
+        render_env_popup(frame, app);
+    }
+
+    if app.save_popup.is_some() {
+        render_save_popup(frame, app);
     }
 
     if app.show_help {
@@ -166,7 +184,7 @@ fn render_sidebar_popup(frame: &mut Frame, app: &App, popup: &SidebarPopup, area
             vec![
                 Line::from("Name or path (folder/req or folder/)"),
                 Line::from(""),
-                Line::from(render_input_line(input)),
+                render_input_line(input),
                 Line::from(""),
                 Line::from("Enter: create  Esc: cancel"),
             ],
@@ -176,7 +194,7 @@ fn render_sidebar_popup(frame: &mut Frame, app: &App, popup: &SidebarPopup, area
             vec![
                 Line::from("New name"),
                 Line::from(""),
-                Line::from(render_input_line(input)),
+                render_input_line(input),
                 Line::from(""),
                 Line::from("Enter: rename  Esc: cancel"),
             ],
@@ -186,7 +204,7 @@ fn render_sidebar_popup(frame: &mut Frame, app: &App, popup: &SidebarPopup, area
             vec![
                 Line::from("Filter items"),
                 Line::from(""),
-                Line::from(render_input_line(input)),
+                render_input_line(input),
                 Line::from(""),
                 Line::from("Enter: apply  Esc: clear"),
             ],
@@ -250,8 +268,9 @@ fn render_sidebar_popup(frame: &mut Frame, app: &App, popup: &SidebarPopup, area
 
 fn render_input_line(input: &crate::app::TextInput) -> Line<'static> {
     let mut text = input.value.clone();
-    if input.cursor <= text.len() {
-        text.insert(input.cursor, '|');
+    let byte_pos = input.byte_offset();
+    if byte_pos <= text.len() {
+        text.insert(byte_pos, '|');
     } else {
         text.push('|');
     }
@@ -324,6 +343,511 @@ fn render_method_popup(frame: &mut Frame, app: &App, method_area: Rect) {
     frame.render_widget(list, inner);
 }
 
+fn render_body_panel(frame: &mut Frame, app: &App, area: Rect) {
+    let layout = BodyLayout::new(area);
+
+    render_body_mode_selector(frame, app, layout.mode_selector_area);
+
+    let body_focused = app.focus.panel == Panel::Request
+        && app.focus.request_field == RequestField::Body;
+
+    match app.request.body_mode {
+        BodyMode::Raw | BodyMode::Json | BodyMode::Xml => {
+            frame.render_widget(&app.request.body_editor, layout.content_area);
+        }
+        BodyMode::FormUrlEncoded => {
+            render_kv_table(
+                frame,
+                &app.request.body_form_pairs,
+                &app.request.body_multipart_fields,
+                false,
+                app.focus.kv_focus,
+                body_focused && app.focus.body_field == BodyField::KvRow,
+                app.app_mode == AppMode::Editing,
+                &app.kv_edit_textarea,
+                layout.content_area,
+            );
+        }
+        BodyMode::Multipart => {
+            render_kv_table(
+                frame,
+                &app.request.body_form_pairs,
+                &app.request.body_multipart_fields,
+                true,
+                app.focus.kv_focus,
+                body_focused && app.focus.body_field == BodyField::KvRow,
+                app.app_mode == AppMode::Editing,
+                &app.kv_edit_textarea,
+                layout.content_area,
+            );
+        }
+        BodyMode::Binary => {
+            render_binary_panel(frame, app, layout.content_area);
+        }
+    }
+}
+
+fn render_binary_panel(frame: &mut Frame, app: &App, area: Rect) {
+    let chunks = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(3),
+        Constraint::Min(0),
+    ])
+    .split(area);
+
+    let label = Paragraph::new(" File:")
+        .style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(label, chunks[0]);
+    frame.render_widget(&app.request.body_binary_path_editor, chunks[1]);
+
+    let path_text = app.request.body_binary_path_text();
+    let info = if path_text.trim().is_empty() {
+        " No file selected".to_string()
+    } else {
+        match std::fs::metadata(&path_text) {
+            Ok(meta) => format!(" {} bytes", meta.len()),
+            Err(_) => " File not found".to_string(),
+        }
+    };
+    let info_widget = Paragraph::new(info)
+        .style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(info_widget, chunks[2]);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_kv_table(
+    frame: &mut Frame,
+    form_pairs: &[KvPair],
+    multipart_fields: &[MultipartField],
+    is_multipart: bool,
+    focus: KvFocus,
+    is_focused: bool,
+    is_editing: bool,
+    edit_textarea: &Option<TextArea<'static>>,
+    area: Rect,
+) {
+    let rows: Vec<KvRowData> = if is_multipart {
+        multipart_fields
+            .iter()
+            .map(|f| KvRowData {
+                key: &f.key,
+                value: &f.value,
+                enabled: f.enabled,
+                type_label: match f.field_type {
+                    MultipartFieldType::Text => "Text",
+                    MultipartFieldType::File => "File",
+                },
+            })
+            .collect()
+    } else {
+        form_pairs
+            .iter()
+            .map(|p| KvRowData {
+                key: &p.key,
+                value: &p.value,
+                enabled: p.enabled,
+                type_label: "",
+            })
+            .collect()
+    };
+
+    if area.height < 2 {
+        return;
+    }
+
+    // Header row
+    let header_area = Rect::new(area.x, area.y, area.width, 1);
+    let data_area = Rect::new(area.x, area.y + 1, area.width, area.height.saturating_sub(1));
+
+    let col_constraints = if is_multipart {
+        vec![
+            Constraint::Length(3),
+            Constraint::Percentage(30),
+            Constraint::Length(6),
+            Constraint::Percentage(50),
+        ]
+    } else {
+        vec![
+            Constraint::Length(3),
+            Constraint::Percentage(45),
+            Constraint::Percentage(45),
+        ]
+    };
+
+    let header_cols = Layout::horizontal(col_constraints.clone()).split(header_area);
+    let header_style = Style::default()
+        .fg(Color::DarkGray)
+        .add_modifier(Modifier::BOLD);
+
+    frame.render_widget(
+        Paragraph::new(" ").style(header_style),
+        header_cols[0],
+    );
+    frame.render_widget(
+        Paragraph::new(" Key").style(header_style),
+        header_cols[1],
+    );
+    if is_multipart {
+        frame.render_widget(
+            Paragraph::new(" Type").style(header_style),
+            header_cols[2],
+        );
+        frame.render_widget(
+            Paragraph::new(" Value").style(header_style),
+            header_cols[3],
+        );
+    } else {
+        frame.render_widget(
+            Paragraph::new(" Value").style(header_style),
+            header_cols[2],
+        );
+    }
+
+    // Scroll: keep focused row visible
+    let visible_rows = data_area.height as usize;
+    let scroll_offset = if is_focused && focus.row >= visible_rows {
+        focus.row - visible_rows + 1
+    } else {
+        0
+    };
+
+    for (display_idx, row_idx) in (scroll_offset..rows.len())
+        .enumerate()
+        .take(visible_rows)
+    {
+        let row = &rows[row_idx];
+        let y = data_area.y + display_idx as u16;
+        let row_area = Rect::new(data_area.x, y, data_area.width, 1);
+        let cols = Layout::horizontal(col_constraints.clone()).split(row_area);
+
+        let is_active_row = is_focused && focus.row == row_idx;
+        let row_style = if !row.enabled {
+            Style::default().fg(Color::DarkGray)
+        } else if is_active_row {
+            Style::default().fg(Color::White)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+
+        // Enabled indicator
+        let toggle = if row.enabled { " \u{2713}" } else { " \u{2717}" };
+        let toggle_style = if row.enabled {
+            Style::default().fg(Color::Green)
+        } else {
+            Style::default().fg(Color::Red)
+        };
+        frame.render_widget(
+            Paragraph::new(toggle).style(toggle_style),
+            cols[0],
+        );
+
+        // Key column
+        let key_active = is_active_row && focus.column == KvColumn::Key;
+        let key_style = if key_active && is_editing {
+            Style::default().fg(Color::Black).bg(Color::Cyan)
+        } else if key_active {
+            Style::default().fg(Color::Cyan)
+        } else {
+            row_style
+        };
+
+        if key_active && is_editing {
+            if let Some(ta) = edit_textarea {
+                frame.render_widget(ta, cols[1]);
+            }
+        } else {
+            let key_display = if row.key.is_empty() {
+                ""
+            } else {
+                row.key
+            };
+            frame.render_widget(
+                Paragraph::new(format!(" {}", key_display)).style(key_style),
+                cols[1],
+            );
+        }
+
+        if is_multipart {
+            // Type column
+            let type_style = if is_active_row && focus.column == KvColumn::Value {
+                // Type column isn't a separate focus target in this simplified version
+                row_style
+            } else {
+                row_style
+            };
+            frame.render_widget(
+                Paragraph::new(format!(" {}", row.type_label)).style(type_style),
+                cols[2],
+            );
+
+            // Value column
+            let val_active = is_active_row && focus.column == KvColumn::Value;
+            let val_style = if val_active && is_editing {
+                Style::default().fg(Color::Black).bg(Color::Cyan)
+            } else if val_active {
+                Style::default().fg(Color::Cyan)
+            } else {
+                row_style
+            };
+
+            if val_active && is_editing {
+                if let Some(ta) = edit_textarea {
+                    frame.render_widget(ta, cols[3]);
+                }
+            } else {
+                frame.render_widget(
+                    Paragraph::new(format!(" {}", row.value)).style(val_style),
+                    cols[3],
+                );
+            }
+        } else {
+            // Value column
+            let val_active = is_active_row && focus.column == KvColumn::Value;
+            let val_style = if val_active && is_editing {
+                Style::default().fg(Color::Black).bg(Color::Cyan)
+            } else if val_active {
+                Style::default().fg(Color::Cyan)
+            } else {
+                row_style
+            };
+
+            if val_active && is_editing {
+                if let Some(ta) = edit_textarea {
+                    frame.render_widget(ta, cols[2]);
+                }
+            } else {
+                frame.render_widget(
+                    Paragraph::new(format!(" {}", row.value)).style(val_style),
+                    cols[2],
+                );
+            }
+        }
+    }
+}
+
+struct KvRowData<'a> {
+    key: &'a str,
+    value: &'a str,
+    enabled: bool,
+    type_label: &'a str,
+}
+
+fn render_body_mode_selector(frame: &mut Frame, app: &App, area: Rect) {
+    let body_focused = app.focus.panel == Panel::Request
+        && app.focus.request_field == RequestField::Body;
+    let on_selector = body_focused && app.focus.body_field == BodyField::ModeSelector;
+
+    let style = if on_selector {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let mut spans = vec![Span::styled(
+        format!(" Type: [{}]", app.request.body_mode.as_str()),
+        style,
+    )];
+
+    // JSON validation indicator
+    if app.request.body_mode == BodyMode::Json {
+        let body_text = app.request.body_text();
+        if !body_text.trim().is_empty() {
+            let is_valid = serde_json::from_str::<serde_json::Value>(&body_text).is_ok();
+            if is_valid {
+                spans.push(Span::styled(" \u{2713}", Style::default().fg(Color::Green)));
+            } else {
+                spans.push(Span::styled(" \u{2717}", Style::default().fg(Color::Red)));
+            }
+        }
+    }
+
+    let line = Line::from(spans);
+    frame.render_widget(Paragraph::new(line), area);
+}
+
+fn render_body_mode_popup(frame: &mut Frame, app: &App, area: Rect) {
+    let width: u16 = 22;
+    let height: u16 = BodyMode::ALL.len() as u16 + 2;
+    let x = area.x + 2;
+    let y = area.y + 2;
+    let popup_area = Rect::new(
+        x.min(area.right().saturating_sub(width)),
+        y.min(area.bottom().saturating_sub(height)),
+        width.min(area.width),
+        height.min(area.height),
+    );
+
+    frame.render_widget(Clear, popup_area);
+
+    let popup_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(" Body Type ");
+
+    let inner = popup_block.inner(popup_area);
+    frame.render_widget(popup_block, popup_area);
+
+    let lines: Vec<Line> = BodyMode::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, mode)| {
+            let is_selected = i == app.body_mode_popup_index;
+            let style = if is_selected {
+                Style::default().fg(Color::Black).bg(Color::Cyan)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            Line::from(Span::styled(format!(" {} ", mode.as_str()), style))
+        })
+        .collect();
+
+    let list = Paragraph::new(lines);
+    frame.render_widget(list, inner);
+}
+
+fn render_auth_type_popup(frame: &mut Frame, app: &App, area: Rect) {
+    let width: u16 = 20;
+    let height: u16 = AuthType::ALL.len() as u16 + 2;
+    let x = area.x + 2;
+    let y = area.y + 2;
+    let popup_area = Rect::new(
+        x.min(area.right().saturating_sub(width)),
+        y.min(area.bottom().saturating_sub(height)),
+        width.min(area.width),
+        height.min(area.height),
+    );
+
+    frame.render_widget(Clear, popup_area);
+
+    let popup_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(" Auth Type ");
+
+    let inner = popup_block.inner(popup_area);
+    frame.render_widget(popup_block, popup_area);
+
+    let lines: Vec<Line> = AuthType::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, auth_type)| {
+            let is_selected = i == app.auth_type_popup_index;
+            let style = if is_selected {
+                Style::default().fg(Color::Black).bg(Color::Cyan)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            Line::from(Span::styled(format!(" {} ", auth_type.as_str()), style))
+        })
+        .collect();
+
+    let list = Paragraph::new(lines);
+    frame.render_widget(list, inner);
+}
+
+fn render_env_popup(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+
+    let item_count = app.environments.len() + 1; // +1 for "No Environment"
+    let width: u16 = 30;
+    let height: u16 = item_count as u16 + 2; // +2 for border
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let popup_area = Rect::new(x, y, width.min(area.width), height.min(area.height));
+
+    frame.render_widget(Clear, popup_area);
+
+    let popup_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(" Environment ");
+
+    let inner = popup_block.inner(popup_area);
+    frame.render_widget(popup_block, popup_area);
+
+    let active_name = app.active_environment_name.as_deref();
+
+    let mut lines: Vec<Line> = Vec::with_capacity(item_count);
+
+    // "No Environment" entry (index 0)
+    let is_selected = app.env_popup_index == 0;
+    let is_active = active_name.is_none();
+    let label = if is_active {
+        " \u{2713} No Environment "
+    } else {
+        "   No Environment "
+    };
+    let style = if is_selected {
+        Style::default().fg(Color::Black).bg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    lines.push(Line::from(Span::styled(label, style)));
+
+    // Named environments (index 1..N)
+    for (i, env) in app.environments.iter().enumerate() {
+        let is_selected = app.env_popup_index == i + 1;
+        let is_active = active_name == Some(env.name.as_str());
+        let label = if is_active {
+            format!(" \u{2713} {} ", env.name)
+        } else {
+            format!("   {} ", env.name)
+        };
+        let style = if is_selected {
+            Style::default().fg(Color::Black).bg(Color::Cyan)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        lines.push(Line::from(Span::styled(label, style)));
+    }
+
+    let list = Paragraph::new(lines);
+    frame.render_widget(list, inner);
+}
+
+fn render_save_popup(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+    let width: u16 = 50.min(area.width.saturating_sub(4));
+    let height: u16 = 3;
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let popup_area = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, popup_area);
+
+    let popup_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(" Save Response ");
+
+    let inner = popup_block.inner(popup_area);
+    frame.render_widget(popup_block, popup_area);
+
+    if let Some(ref input) = app.save_popup {
+        let display = input.value.to_string();
+        let cursor_pos = input.cursor;
+
+        let mut spans = Vec::new();
+        if display.is_empty() {
+            spans.push(Span::styled(
+                "Enter file path...",
+                Style::default().fg(Color::DarkGray),
+            ));
+        } else {
+            spans.push(Span::raw(&display));
+        }
+
+        let line = Line::from(spans);
+        let input_widget = Paragraph::new(line);
+        frame.render_widget(input_widget, inner);
+
+        // Position cursor
+        let cx = inner.x + cursor_pos.min(inner.width as usize) as u16;
+        let cy = inner.y;
+        frame.set_cursor_position((cx, cy));
+    }
+}
+
 fn is_field_focused(app: &App, field: RequestField) -> bool {
     app.focus.panel == Panel::Request && app.focus.request_field == field
 }
@@ -390,7 +914,7 @@ fn render_request_panel(frame: &mut Frame, app: &App, area: Rect) {
     let request_panel_focused = app.focus.panel == Panel::Request
         && matches!(
             app.focus.request_field,
-            RequestField::Headers | RequestField::Body
+            RequestField::Headers | RequestField::Auth | RequestField::Body
         );
     let border_color = if request_panel_focused {
         Color::Green
@@ -417,8 +941,11 @@ fn render_request_panel(frame: &mut Frame, app: &App, area: Rect) {
         RequestTab::Headers => {
             frame.render_widget(&app.request.headers_editor, layout.content_area);
         }
+        RequestTab::Auth => {
+            render_auth_panel(frame, app, layout.content_area);
+        }
         RequestTab::Body => {
-            frame.render_widget(&app.request.body_editor, layout.content_area);
+            render_body_panel(frame, app, layout.content_area);
         }
     }
 }
@@ -427,7 +954,7 @@ fn render_request_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
     let request_panel_focused = app.focus.panel == Panel::Request
         && matches!(
             app.focus.request_field,
-            RequestField::Headers | RequestField::Body
+            RequestField::Headers | RequestField::Auth | RequestField::Body
         );
     let active_color = if request_panel_focused {
         Color::Green
@@ -438,6 +965,23 @@ fn render_request_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
         .fg(active_color)
         .add_modifier(Modifier::UNDERLINED);
     let inactive_style = Style::default().fg(Color::DarkGray);
+
+    let auth_label = match app.request.auth_type {
+        AuthType::NoAuth => "Auth".to_string(),
+        AuthType::Bearer => "Auth (Bearer)".to_string(),
+        AuthType::Basic => "Auth (Basic)".to_string(),
+        AuthType::ApiKey => "Auth (API Key)".to_string(),
+    };
+
+    let body_label = match app.request.body_mode {
+        BodyMode::Raw => "Body".to_string(),
+        BodyMode::Json => "Body (JSON)".to_string(),
+        BodyMode::Xml => "Body (XML)".to_string(),
+        BodyMode::FormUrlEncoded => "Body (Form)".to_string(),
+        BodyMode::Multipart => "Body (Multipart)".to_string(),
+        BodyMode::Binary => "Body (Binary)".to_string(),
+    };
+
     let tabs_line = Line::from(vec![
         Span::styled(
             "Headers",
@@ -449,7 +993,16 @@ fn render_request_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
         ),
         Span::styled(" | ", inactive_style),
         Span::styled(
-            "Body",
+            auth_label,
+            if app.request_tab == RequestTab::Auth {
+                active_style
+            } else {
+                inactive_style
+            },
+        ),
+        Span::styled(" | ", inactive_style),
+        Span::styled(
+            body_label,
             if app.request_tab == RequestTab::Body {
                 active_style
             } else {
@@ -460,6 +1013,157 @@ fn render_request_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
 
     let tabs_widget = Paragraph::new(tabs_line);
     frame.render_widget(tabs_widget, area);
+}
+
+fn render_auth_panel(frame: &mut Frame, app: &App, area: Rect) {
+    use crate::app::ApiKeyLocation;
+
+    let auth_focused = app.focus.panel == Panel::Request
+        && app.focus.request_field == RequestField::Auth;
+
+    // Layout: type selector row (1) + separator (1) + content (fill)
+    let chunks = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(0),
+    ])
+    .split(area);
+
+    // Row 1: Auth type selector
+    let type_label = format!("Type: [{}]", app.request.auth_type.as_str());
+    let type_focused = auth_focused && app.focus.auth_field == AuthField::AuthType;
+    let type_style = if type_focused {
+        Style::default().fg(Color::Green)
+    } else {
+        Style::default().fg(Color::White)
+    };
+    frame.render_widget(Paragraph::new(type_label).style(type_style), chunks[0]);
+
+    // Separator
+    let sep_style = Style::default().fg(Color::DarkGray);
+    let sep_line = "─".repeat(area.width as usize);
+    frame.render_widget(Paragraph::new(sep_line).style(sep_style), chunks[1]);
+
+    // Content area — per auth type
+    let content_area = chunks[2];
+    match app.request.auth_type {
+        AuthType::NoAuth => {
+            let msg = Paragraph::new("No authentication configured")
+                .style(Style::default().fg(Color::DarkGray))
+                .alignment(Alignment::Center);
+            frame.render_widget(msg, content_area);
+        }
+        AuthType::Bearer => {
+            let field_chunks = Layout::vertical([
+                Constraint::Length(1), // label
+                Constraint::Min(0),   // textarea
+            ])
+            .split(content_area);
+
+            let label_focused =
+                auth_focused && app.focus.auth_field == AuthField::Token;
+            let label_style = if label_focused {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default().fg(Color::Cyan)
+            };
+            frame.render_widget(
+                Paragraph::new("Token:").style(label_style),
+                field_chunks[0],
+            );
+            frame.render_widget(&app.request.auth_token_editor, field_chunks[1]);
+        }
+        AuthType::Basic => {
+            let field_chunks = Layout::vertical([
+                Constraint::Length(1), // username label
+                Constraint::Length(3), // username textarea
+                Constraint::Length(1), // password label
+                Constraint::Min(0),   // password textarea
+            ])
+            .split(content_area);
+
+            let username_focused =
+                auth_focused && app.focus.auth_field == AuthField::Username;
+            let password_focused =
+                auth_focused && app.focus.auth_field == AuthField::Password;
+
+            let u_style = if username_focused {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default().fg(Color::Cyan)
+            };
+            frame.render_widget(
+                Paragraph::new("Username:").style(u_style),
+                field_chunks[0],
+            );
+            frame.render_widget(&app.request.auth_username_editor, field_chunks[1]);
+
+            let p_style = if password_focused {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default().fg(Color::Cyan)
+            };
+            frame.render_widget(
+                Paragraph::new("Password:").style(p_style),
+                field_chunks[2],
+            );
+            frame.render_widget(&app.request.auth_password_editor, field_chunks[3]);
+        }
+        AuthType::ApiKey => {
+            let field_chunks = Layout::vertical([
+                Constraint::Length(1), // key name label
+                Constraint::Length(2), // key name textarea
+                Constraint::Length(1), // key value label
+                Constraint::Length(2), // key value textarea
+                Constraint::Length(1), // location toggle
+                Constraint::Min(0),   // spacer
+            ])
+            .split(content_area);
+
+            let kn_focused =
+                auth_focused && app.focus.auth_field == AuthField::KeyName;
+            let kv_focused =
+                auth_focused && app.focus.auth_field == AuthField::KeyValue;
+            let loc_focused =
+                auth_focused && app.focus.auth_field == AuthField::KeyLocation;
+
+            let kn_style = if kn_focused {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default().fg(Color::Cyan)
+            };
+            frame.render_widget(
+                Paragraph::new("Key:").style(kn_style),
+                field_chunks[0],
+            );
+            frame.render_widget(&app.request.auth_key_name_editor, field_chunks[1]);
+
+            let kv_style = if kv_focused {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default().fg(Color::Cyan)
+            };
+            frame.render_widget(
+                Paragraph::new("Value:").style(kv_style),
+                field_chunks[2],
+            );
+            frame.render_widget(&app.request.auth_key_value_editor, field_chunks[3]);
+
+            let loc_label = match app.request.api_key_location {
+                ApiKeyLocation::Header => "Add to: [Header]",
+                ApiKeyLocation::QueryParam => "Add to: [Query Param]",
+            };
+            let loc_style = if loc_focused {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            frame.render_widget(
+                Paragraph::new(loc_label).style(loc_style),
+                field_chunks[4],
+            );
+        }
+    }
 }
 
 fn render_response_panel(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -477,7 +1181,12 @@ fn render_response_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let inner_area = outer_block.inner(area);
     frame.render_widget(outer_block, area);
 
-    let response_layout = ResponseLayout::new(inner_area);
+    let search_bar_visible = app.response_search.active
+        || (!app.response_search.query.is_empty()
+            && app.response_tab == ResponseTab::Body);
+    let response_layout = ResponseLayout::new(inner_area, search_bar_visible);
+    // Keep the stored viewport height in sync with the actual rendered content area
+    app.response_viewport_height = response_layout.content_area.height;
     render_response_tab_bar(frame, app, response_layout.tab_area);
     frame.render_widget(Paragraph::new(""), response_layout.spacer_area);
 
@@ -526,6 +1235,7 @@ fn render_response_panel(frame: &mut Frame, app: &mut App, area: Rect) {
                         response_layout.content_area,
                         response_scroll,
                         editing_response,
+                        &app.response_search,
                     );
                 }
                 ResponseTab::Headers => {
@@ -543,10 +1253,15 @@ fn render_response_panel(frame: &mut Frame, app: &mut App, area: Rect) {
             }
         }
     }
+
+    // Render search bar
+    if let Some(search_area) = response_layout.search_bar_area {
+        render_search_bar(frame, &app.response_search, search_area);
+    }
 }
 
 fn render_response_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let (status_text, status_style) = response_status_text(app);
+    let (status_text, status_style) = response_status_text(app, area.width < 50);
     let active_color = if app.focus.panel == Panel::Response {
         Color::Green
     } else {
@@ -585,7 +1300,7 @@ fn render_response_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(status_widget, area);
 }
 
-fn response_status_text(app: &App) -> (String, Style) {
+fn response_status_text(app: &App, narrow: bool) -> (String, Style) {
     match &app.response {
         ResponseStatus::Empty => (
             "Idle".to_string(),
@@ -600,15 +1315,25 @@ fn response_status_text(app: &App) -> (String, Style) {
             "Cancelled".to_string(),
             Style::default().fg(Color::Yellow),
         ),
-        ResponseStatus::Success(data) => (
-            format!("{} {} ({}ms)", data.status, data.status_text, data.duration_ms),
-            Style::default().fg(status_color(data.status)),
-        ),
+        ResponseStatus::Success(data) => {
+            let text = if narrow {
+                format!("{} {} ({}ms)", data.status, data.status_text, data.duration_ms)
+            } else {
+                format!(
+                    "{} {} ({}ms) · {}",
+                    data.status,
+                    data.status_text,
+                    data.duration_ms,
+                    format_size(data.body_size_bytes),
+                )
+            };
+            (text, Style::default().fg(status_color(data.status)))
+        }
     }
 }
 
 fn status_color(status: u16) -> Color {
-    if status >= 200 && status < 300 {
+    if (200..300).contains(&status) {
         Color::Green
     } else if status >= 400 {
         Color::Red
@@ -617,6 +1342,7 @@ fn status_color(status: u16) -> Color {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_response_body(
     frame: &mut Frame,
     response_editor: &TextArea<'static>,
@@ -625,11 +1351,12 @@ fn render_response_body(
     area: Rect,
     scroll_offset: u16,
     editing: bool,
+    search: &ResponseSearch,
 ) {
     if cache.dirty {
         let editor_lines = response_editor.lines();
         cache.body_text = editor_lines.join("\n");
-        cache.is_json = is_json_response(&data.headers, &cache.body_text);
+        cache.is_json = is_json_content(&data.headers, &cache.body_text);
         cache.lines = if cache.is_json {
             colorize_json(&cache.body_text)
         } else {
@@ -641,7 +1368,38 @@ fn render_response_body(
         cache.generation = cache.generation.wrapping_add(1);
         cache.dirty = false;
         cache.wrap_cache.generation = 0;
+        // Body changed, invalidate search highlight cache so it recomputes
+        cache.highlight_search_gen = 0;
     }
+
+    // Determine which lines to render and the effective generation for the wrap cache.
+    // When search matches exist, use cached highlighted lines to avoid cloning every frame.
+    // When no search matches exist, pass the base lines directly without any allocation.
+    let search_gen = search.generation;
+    let has_matches = !search.matches.is_empty();
+
+    if has_matches && cache.highlight_search_gen != search_gen {
+        // Search state changed (query, matches, or current_match) -- recompute highlights
+        cache.highlighted_lines =
+            apply_search_highlights(&cache.lines, &search.matches, search.current_match);
+        cache.highlight_search_gen = search_gen;
+    } else if !has_matches {
+        // No active search -- clear highlight cache to free memory
+        if !cache.highlighted_lines.is_empty() {
+            cache.highlighted_lines = Vec::new();
+            cache.highlight_search_gen = 0;
+        }
+    }
+
+    let lines_to_render: &[Line<'static>] = if has_matches {
+        &cache.highlighted_lines
+    } else {
+        &cache.lines
+    };
+
+    // Use search generation to force wrap cache invalidation when search changes
+    let effective_generation = cache.generation.wrapping_add(search_gen);
+
     let cursor = if editing {
         Some(response_editor.cursor())
     } else {
@@ -655,14 +1413,146 @@ fn render_response_body(
     render_wrapped_response_cached(
         frame,
         area,
-        &cache.lines,
+        lines_to_render,
         &mut cache.wrap_cache,
-        cache.generation,
+        effective_generation,
         cursor,
         selection,
         scroll_offset,
         editing,
     );
+}
+
+fn apply_search_highlights(
+    lines: &[Line<'static>],
+    matches: &[SearchMatch],
+    current_match: usize,
+) -> Vec<Line<'static>> {
+    let highlight_style = Style::default().fg(Color::Black).bg(Color::Yellow);
+    let current_style = Style::default().fg(Color::Black).bg(Color::LightRed);
+
+    let mut result = lines.to_vec();
+
+    // Group matches by line
+    for (match_idx, m) in matches.iter().enumerate() {
+        if m.line_index >= result.len() {
+            continue;
+        }
+        let style = if match_idx == current_match {
+            current_style
+        } else {
+            highlight_style
+        };
+
+        let line = &result[m.line_index];
+        result[m.line_index] = highlight_spans_in_line(line, m.byte_start, m.byte_end, style);
+    }
+
+    result
+}
+
+fn highlight_spans_in_line(
+    line: &Line<'static>,
+    byte_start: usize,
+    byte_end: usize,
+    highlight_style: Style,
+) -> Line<'static> {
+    let mut new_spans: Vec<Span<'static>> = Vec::new();
+    let mut byte_offset: usize = 0;
+
+    for span in line.spans.iter() {
+        let span_content = span.content.as_ref();
+        let span_len = span_content.len();
+        let span_start = byte_offset;
+        let span_end = byte_offset + span_len;
+
+        if byte_end <= span_start || byte_start >= span_end {
+            // No overlap
+            new_spans.push(span.clone());
+        } else {
+            // There is overlap - split the span
+            let hl_start = byte_start.saturating_sub(span_start);
+            let hl_end = (byte_end - span_start).min(span_len);
+
+            if hl_start > 0 {
+                new_spans.push(Span::styled(
+                    span_content[..hl_start].to_string(),
+                    span.style,
+                ));
+            }
+            new_spans.push(Span::styled(
+                span_content[hl_start..hl_end].to_string(),
+                highlight_style,
+            ));
+            if hl_end < span_len {
+                new_spans.push(Span::styled(
+                    span_content[hl_end..].to_string(),
+                    span.style,
+                ));
+            }
+        }
+
+        byte_offset += span_len;
+    }
+
+    Line::from(new_spans)
+}
+
+fn render_search_bar(frame: &mut Frame, search: &ResponseSearch, area: Rect) {
+    let case_indicator = if search.case_sensitive { "AA" } else { "Aa" };
+    let match_count = if search.matches.is_empty() {
+        "0/0".to_string()
+    } else {
+        format!("{}/{}", search.current_match + 1, search.matches.len())
+    };
+
+    let right_info = format!("[{}] {}", case_indicator, match_count);
+    let right_len = right_info.len() as u16;
+
+    // Left side: / prefix + query
+    let query_text = if search.active {
+        &search.input.value
+    } else {
+        &search.query
+    };
+    let left = format!("/{}", query_text);
+
+    let available_width = area.width.saturating_sub(right_len + 2);
+    let left_display = if left.len() > available_width as usize {
+        left[..available_width as usize].to_string()
+    } else {
+        left.clone()
+    };
+
+    let mut spans = vec![
+        Span::styled(
+            left_display,
+            Style::default().fg(Color::White),
+        ),
+    ];
+
+    // Pad to push right_info to the end
+    let padding_len = area
+        .width
+        .saturating_sub(left.len() as u16 + right_len) as usize;
+    if padding_len > 0 {
+        spans.push(Span::raw(" ".repeat(padding_len)));
+    }
+    spans.push(Span::styled(
+        right_info,
+        Style::default().fg(Color::DarkGray),
+    ));
+
+    let line = Line::from(spans);
+    let bar = Paragraph::new(line).style(Style::default().bg(Color::DarkGray).fg(Color::White));
+    frame.render_widget(bar, area);
+
+    // Position cursor when search input is active
+    if search.active {
+        let cursor_x = area.x + 1 + search.input.cursor as u16; // +1 for '/' prefix
+        let cursor_x = cursor_x.min(area.x + area.width.saturating_sub(1));
+        frame.set_cursor_position((cursor_x, area.y));
+    }
 }
 
 fn render_response_headers(
@@ -703,30 +1593,18 @@ fn render_response_headers(
     );
 }
 
-fn is_json_response(headers: &[(String, String)], body: &str) -> bool {
-    let has_json_content_type = headers.iter().any(|(k, v)| {
-        k.eq_ignore_ascii_case("content-type") && v.contains("application/json")
-    });
-    if has_json_content_type {
-        return true;
-    }
-    let trimmed = body.trim();
-    (trimmed.starts_with('{') && trimmed.ends_with('}'))
-        || (trimmed.starts_with('[') && trimmed.ends_with(']'))
-}
-
 fn colorize_json(json: &str) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let mut current_spans: Vec<Span<'static>> = Vec::new();
 
-    let mut chars = json.chars().peekable();
+    let chars = json.chars().peekable();
     let mut in_string = false;
     let mut current_token = String::new();
     let mut stack: Vec<char> = Vec::new();
     let mut expecting_key = false;
     let mut current_string_is_key = false;
 
-    while let Some(c) = chars.next() {
+    for c in chars {
         match c {
             '"' if !in_string => {
                 in_string = true;
@@ -867,6 +1745,7 @@ fn colorize_headers(lines: &[String]) -> Vec<Line<'static>> {
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_wrapped_response_cached(
     frame: &mut Frame,
     area: Rect,
@@ -950,7 +1829,7 @@ fn wrap_lines_with_cursor(
     let mut cursor_pos: Option<(usize, usize)> = None;
 
     for (row, line) in lines.iter().enumerate() {
-        let line_len = line_char_len(&line);
+        let line_len = line_char_len(line);
         let selection_range = selection_range_for_row(selection, row, line_len);
         let cursor_col = cursor.and_then(|(r, c)| if r == row { Some(c) } else { None });
         let (parts, line_cursor) =
@@ -1112,6 +1991,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 RequestField::Url => "URL",
                 RequestField::Send => "Send",
                 RequestField::Headers => "Headers",
+                RequestField::Auth => "Auth",
                 RequestField::Body => "Body",
             };
             format!("Request > {}", field)
@@ -1119,20 +1999,31 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         Panel::Response => format!("Response > {}", app.response_tab.label()),
     };
 
+    let in_response = app.focus.panel == Panel::Response;
     let hints = if app.focus.panel == Panel::Sidebar {
         if matches!(app.app_mode, AppMode::Sidebar) {
             "j/k:move  a:add  r:rename  d:del  m:move  /:search  Enter:open  Esc:exit"
         } else {
             "Enter/i:edit  hjkl:nav  Ctrl+p:projects  Ctrl+e:toggle"
         }
+    } else if app.response_search.active {
+        "type:search  Enter:confirm  Esc:cancel  Ctrl+i:case"
     } else {
         match app.app_mode {
             AppMode::Navigation => {
-                "hjkl:nav  e:sidebar  Enter:edit  i:insert  Ctrl+r:send  Ctrl+s:save  Ctrl+e:toggle  ?:help  q:quit"
+                if in_response {
+                    "hjkl:nav  Enter:edit  c:copy  S:save  Ctrl+r:send  ?:help  q:quit"
+                } else {
+                    "hjkl:nav  e:sidebar  Enter:edit  i:insert  Ctrl+r:send  Ctrl+s:save  Ctrl+n:env  Ctrl+e:toggle  ?:help  q:quit"
+                }
             }
             AppMode::Editing => match app.vim.mode {
                 VimMode::Normal => {
-                    "hjkl:move  w/b/e:word  i/a:insert  v:visual  d/c/y:op  Cmd/Ctrl+C/V:clip  Esc:exit"
+                    if in_response && app.response_tab == ResponseTab::Body {
+                        "hjkl:move  /:search  n/N:next/prev  v:visual  Cmd/Ctrl+C/V:clip  Esc:exit"
+                    } else {
+                        "hjkl:move  w/b/e:word  i/a:insert  v:visual  d/c/y:op  Cmd/Ctrl+C/V:clip  Esc:exit"
+                    }
                 }
                 VimMode::Insert => {
                     "type text  Cmd/Ctrl+V:paste  Cmd/Ctrl+C:copy  Enter:send(URL)  Esc:normal"
@@ -1153,6 +2044,17 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         Span::raw("  │  "),
         Span::styled(hints, Style::default().fg(Color::DarkGray)),
     ];
+
+    if let Some(env_name) = app.active_environment_name.as_deref() {
+        status_spans.push(Span::raw("  │  "));
+        status_spans.push(Span::styled(
+            format!(" {} ", env_name),
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Blue)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
 
     if let Some(msg) = app.clipboard_toast_message() {
         status_spans.push(Span::raw("  │  "));
@@ -1202,6 +2104,9 @@ fn render_help_overlay(frame: &mut Frame) {
         Line::from("  Ctrl+e      Toggle sidebar (enter sidebar when opening)"),
         Line::from("  Ctrl+p      Project switcher"),
         Line::from("  Ctrl+s      Save request"),
+        Line::from("  Ctrl+n      Switch environment"),
+        Line::from("  c           Copy response (on response panel)"),
+        Line::from("  S           Save response to file (on response panel)"),
         Line::from("  q / Esc     Quit"),
         Line::from(""),
         Line::from(Span::styled(
@@ -1245,6 +2150,16 @@ fn render_help_overlay(frame: &mut Frame) {
         Line::from("  u / Ctrl+r  Undo / redo"),
         Line::from("  Enter       Send request (URL field only)"),
         Line::from("  Esc         Exit to navigation mode"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Response Search (Body tab)",
+            Style::default().fg(Color::Yellow),
+        )),
+        Line::from("  /           Open search bar"),
+        Line::from("  n / N       Next / previous match"),
+        Line::from("  Enter       Confirm search, close input bar"),
+        Line::from("  Esc         Cancel search, clear highlights"),
+        Line::from("  Ctrl+i      Toggle case sensitivity"),
     ];
 
     let help_paragraph = Paragraph::new(help_text);

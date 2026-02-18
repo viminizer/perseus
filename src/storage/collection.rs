@@ -437,7 +437,7 @@ fn sort_collection(collection: &mut PostmanCollection) -> bool {
     sort_items(&mut collection.item)
 }
 
-fn sort_items(items: &mut Vec<PostmanItem>) -> bool {
+fn sort_items(items: &mut [PostmanItem]) -> bool {
     let before: Vec<String> = items.iter().map(|i| i.id.clone()).collect();
     items.sort_by(|a, b| {
         let an = a.name.to_lowercase();
@@ -467,7 +467,7 @@ fn find_item<'a>(items: &'a [PostmanItem], id: &str) -> Option<&'a PostmanItem> 
     None
 }
 
-fn find_item_mut<'a>(items: &'a mut Vec<PostmanItem>, id: &str) -> Option<&'a mut PostmanItem> {
+fn find_item_mut<'a>(items: &'a mut [PostmanItem], id: &str) -> Option<&'a mut PostmanItem> {
     for item in items.iter_mut() {
         if item.id == id {
             return Some(item);
