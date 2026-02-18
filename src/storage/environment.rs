@@ -27,6 +27,7 @@ fn default_type() -> String {
 }
 
 impl EnvironmentVariable {
+    #[cfg(test)]
     pub fn new(key: &str, value: &str) -> Self {
         Self {
             key: key.to_string(),
@@ -53,6 +54,9 @@ pub fn load_environment(path: &Path) -> Result<Environment, String> {
         .map_err(|e| format!("Failed to parse {}: {}", path.display(), e))
 }
 
+/// Persist an environment to the project's environments directory.
+/// Wired up when the UI supports environment create/edit.
+#[allow(dead_code)]
 pub fn save_environment(env: &Environment) -> Result<(), String> {
     if !is_safe_env_name(&env.name) {
         return Err(format!(
@@ -95,17 +99,43 @@ pub fn load_all_environments() -> Result<Vec<Environment>, String> {
     Ok(environments)
 }
 
+/// Delete an environment file from the project's environments directory.
+/// Wired up when the UI supports environment deletion.
+#[allow(dead_code)]
 pub fn delete_environment_file(name: &str) -> Result<(), String> {
+    if !is_safe_env_name(name) {
+        return Err(format!(
+            "Invalid environment name '{}': must be non-empty and contain only alphanumeric, underscore, or hyphen characters",
+            name
+        ));
+    }
+
     let dir = project::environments_dir()
         .ok_or("Could not find environments directory")?;
     let path = dir.join(format!("{}.json", name));
+
     if path.exists() {
-        fs::remove_file(&path)
-            .map_err(|e| format!("Failed to delete {}: {}", path.display(), e))?;
+        // Canonicalize both paths and verify the target is within the environments directory.
+        // This serves as a second layer of defense against path traversal.
+        let canonical_dir = fs::canonicalize(&dir)
+            .map_err(|e| format!("Failed to resolve environments directory: {}", e))?;
+        let canonical_path = fs::canonicalize(&path)
+            .map_err(|e| format!("Failed to resolve path {}: {}", path.display(), e))?;
+
+        if !canonical_path.starts_with(&canonical_dir) {
+            return Err(format!(
+                "Refusing to delete '{}': resolved path is outside the environments directory",
+                name
+            ));
+        }
+
+        fs::remove_file(&canonical_path)
+            .map_err(|e| format!("Failed to delete {}: {}", canonical_path.display(), e))?;
     }
     Ok(())
 }
 
+#[allow(dead_code)]
 fn is_safe_env_name(name: &str) -> bool {
     !name.is_empty()
         && name

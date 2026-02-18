@@ -1,8 +1,116 @@
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use futures_util::StreamExt;
 use reqwest::Client;
 
 use crate::app::{ApiKeyLocation, HttpMethod, Method, ResponseData};
+
+/// Maximum response body size in bytes (50 MB).
+/// Responses larger than this will be truncated to prevent out-of-memory conditions.
+const MAX_RESPONSE_BODY_SIZE: usize = 50 * 1024 * 1024;
+
+/// Maximum file size allowed for upload (100 MB).
+const MAX_UPLOAD_FILE_SIZE: u64 = 100 * 1024 * 1024;
+
+/// Well-known sensitive directories relative to the user's home directory.
+/// Paths are checked after canonicalization, so symlink tricks are neutralized.
+const SENSITIVE_HOME_PREFIXES: &[&str] = &[
+    "/.ssh",
+    "/.gnupg",
+    "/.gpg",
+    "/.aws",
+    "/.config/gcloud",
+    "/.azure",
+    "/.kube",
+];
+
+/// Well-known sensitive absolute paths that do not depend on a home directory.
+const SENSITIVE_ABSOLUTE_PATHS: &[&str] = &[
+    "/etc/shadow",
+    "/etc/passwd",
+    "/etc/ssl/private",
+    "/etc/sudoers",
+];
+
+/// Validate and resolve a file path before reading it for upload.
+///
+/// Returns the canonicalized [`PathBuf`] on success, or a descriptive error.
+///
+/// Checks performed:
+///   1. The path is canonicalized to resolve `..`, `.`, and symlinks. This also
+///      verifies the path exists on disk.
+///   2. The resolved target must be a regular file (not a directory, device, etc.).
+///   3. The file must not reside in a known sensitive directory.
+///   4. The file size must not exceed [`MAX_UPLOAD_FILE_SIZE`].
+fn validate_file_path(raw_path: &str) -> Result<PathBuf, String> {
+    let path = Path::new(raw_path);
+
+    // 1. Canonicalize -- resolves symlinks, `..`, `.` and verifies existence.
+    let canonical = path.canonicalize().map_err(|e| {
+        format!("Cannot resolve file path '{}': {}", raw_path, e)
+    })?;
+
+    // 2. Must be a regular file after symlink resolution.
+    let metadata = std::fs::metadata(&canonical).map_err(|e| {
+        format!(
+            "Cannot read file metadata for '{}': {}",
+            canonical.display(),
+            e
+        )
+    })?;
+
+    if !metadata.is_file() {
+        return Err(format!(
+            "Path '{}' is not a regular file",
+            canonical.display()
+        ));
+    }
+
+    // 3. Reject files inside sensitive directories.
+    let canonical_str = canonical.to_string_lossy();
+
+    if let Some(home) = home_dir_prefix() {
+        for prefix in SENSITIVE_HOME_PREFIXES {
+            let sensitive = format!("{}{}", home, prefix);
+            if canonical_str.starts_with(&sensitive) {
+                return Err(format!(
+                    "Refusing to read file in sensitive directory: {}",
+                    canonical.display()
+                ));
+            }
+        }
+    }
+
+    for sensitive_path in SENSITIVE_ABSOLUTE_PATHS {
+        if canonical_str.starts_with(sensitive_path) {
+            return Err(format!(
+                "Refusing to read file in sensitive location: {}",
+                canonical.display()
+            ));
+        }
+    }
+
+    // 4. Enforce maximum file size.
+    let size = metadata.len();
+    if size > MAX_UPLOAD_FILE_SIZE {
+        return Err(format!(
+            "File '{}' is too large ({:.1} MB). Maximum allowed size is {:.0} MB.",
+            canonical.display(),
+            size as f64 / (1024.0 * 1024.0),
+            MAX_UPLOAD_FILE_SIZE as f64 / (1024.0 * 1024.0),
+        ));
+    }
+
+    Ok(canonical)
+}
+
+/// Return the user's home directory path as a [`String`], if available.
+fn home_dir_prefix() -> Option<String> {
+    std::env::var("HOME")
+        .ok()
+        .or_else(|| std::env::var("USERPROFILE").ok())
+}
 
 pub enum AuthConfig {
     NoAuth,
@@ -142,11 +250,16 @@ pub async fn send_request(
                             form = form.text(part.key, part.value);
                         }
                         MultipartPartType::File => {
-                            let path = std::path::Path::new(&part.value);
-                            let file_bytes = std::fs::read(path).map_err(|e| {
-                                format!("Failed to read file '{}': {}", part.value, e)
-                            })?;
-                            let file_name = path
+                            let validated_path = validate_file_path(&part.value)?;
+                            let file_bytes =
+                                tokio::fs::read(&validated_path).await.map_err(|e| {
+                                    format!(
+                                        "Failed to read file '{}': {}",
+                                        validated_path.display(),
+                                        e
+                                    )
+                                })?;
+                            let file_name = validated_path
                                 .file_name()
                                 .and_then(|n| n.to_str())
                                 .unwrap_or("file")
@@ -164,8 +277,10 @@ pub async fn send_request(
         }
         BodyContent::Binary(path) => {
             if !path.is_empty() && sends_body {
-                let bytes = std::fs::read(&path)
-                    .map_err(|e| format!("Failed to read file '{}': {}", path, e))?;
+                let validated_path = validate_file_path(&path)?;
+                let bytes = tokio::fs::read(&validated_path).await.map_err(|e| {
+                    format!("Failed to read file '{}': {}", validated_path.display(), e)
+                })?;
                 let mut b = builder;
                 if !has_manual_content_type {
                     b = b.header("Content-Type", "application/octet-stream");
@@ -189,9 +304,37 @@ pub async fn send_request(
         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
         .collect();
 
-    let response_bytes = response.bytes().await.map_err(|e| e.to_string())?;
-    let body_size_bytes = response_bytes.len();
-    let response_body = String::from_utf8_lossy(&response_bytes).into_owned();
+    // Read the response body in chunks, enforcing a size limit to prevent OOM
+    // from malicious or misconfigured servers returning unbounded data.
+    let mut body_bytes: Vec<u8> = Vec::new();
+    let mut truncated = false;
+    let mut stream = response.bytes_stream();
+
+    while let Some(chunk_result) = stream.next().await {
+        let chunk = chunk_result.map_err(|e| e.to_string())?;
+        let remaining = MAX_RESPONSE_BODY_SIZE.saturating_sub(body_bytes.len());
+        if remaining == 0 {
+            truncated = true;
+            break;
+        }
+        if chunk.len() > remaining {
+            body_bytes.extend_from_slice(&chunk[..remaining]);
+            truncated = true;
+            break;
+        }
+        body_bytes.extend_from_slice(&chunk);
+    }
+
+    let body_size_bytes = body_bytes.len();
+    let mut response_body = String::from_utf8_lossy(&body_bytes).into_owned();
+
+    if truncated {
+        response_body.push_str(&format!(
+            "\n\n--- Response truncated at {} bytes (limit: {} bytes) ---",
+            body_size_bytes,
+            MAX_RESPONSE_BODY_SIZE,
+        ));
+    }
 
     let duration_ms = start.elapsed().as_millis() as u64;
 

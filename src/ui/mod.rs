@@ -13,10 +13,10 @@ use tui_textarea::TextArea;
 use unicode_width::UnicodeWidthChar;
 
 use crate::app::{
-    format_size, App, AppMode, AuthField, AuthType, BodyField, BodyMode, HttpMethod, KvColumn,
-    KvFocus, KvPair, Method, MultipartField, MultipartFieldType, Panel, RequestField, RequestTab,
-    ResponseBodyRenderCache, ResponseHeadersRenderCache, ResponseSearch, ResponseStatus,
-    ResponseTab, SearchMatch, SidebarPopup, WrapCache,
+    format_size, is_json_content, App, AppMode, AuthField, AuthType, BodyField, BodyMode,
+    HttpMethod, KvColumn, KvFocus, KvPair, Method, MultipartField, MultipartFieldType, Panel,
+    RequestField, RequestTab, ResponseBodyRenderCache, ResponseHeadersRenderCache, ResponseSearch,
+    ResponseStatus, ResponseTab, SearchMatch, SidebarPopup, WrapCache,
 };
 use crate::perf;
 use crate::storage::NodeKind;
@@ -268,8 +268,9 @@ fn render_sidebar_popup(frame: &mut Frame, app: &App, popup: &SidebarPopup, area
 
 fn render_input_line(input: &crate::app::TextInput) -> Line<'static> {
     let mut text = input.value.clone();
-    if input.cursor <= text.len() {
-        text.insert(input.cursor, '|');
+    let byte_pos = input.byte_offset();
+    if byte_pos <= text.len() {
+        text.insert(byte_pos, '|');
     } else {
         text.push('|');
     }
@@ -1184,6 +1185,8 @@ fn render_response_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         || (!app.response_search.query.is_empty()
             && app.response_tab == ResponseTab::Body);
     let response_layout = ResponseLayout::new(inner_area, search_bar_visible);
+    // Keep the stored viewport height in sync with the actual rendered content area
+    app.response_viewport_height = response_layout.content_area.height;
     render_response_tab_bar(frame, app, response_layout.tab_area);
     frame.render_widget(Paragraph::new(""), response_layout.spacer_area);
 
@@ -1353,7 +1356,7 @@ fn render_response_body(
     if cache.dirty {
         let editor_lines = response_editor.lines();
         cache.body_text = editor_lines.join("\n");
-        cache.is_json = is_json_response(&data.headers, &cache.body_text);
+        cache.is_json = is_json_content(&data.headers, &cache.body_text);
         cache.lines = if cache.is_json {
             colorize_json(&cache.body_text)
         } else {
@@ -1365,17 +1368,37 @@ fn render_response_body(
         cache.generation = cache.generation.wrapping_add(1);
         cache.dirty = false;
         cache.wrap_cache.generation = 0;
+        // Body changed, invalidate search highlight cache so it recomputes
+        cache.highlight_search_gen = 0;
     }
 
-    // Apply search highlights on top of colorized lines
-    let lines_to_render = if !search.matches.is_empty() {
-        apply_search_highlights(&cache.lines, &search.matches, search.current_match)
+    // Determine which lines to render and the effective generation for the wrap cache.
+    // When search matches exist, use cached highlighted lines to avoid cloning every frame.
+    // When no search matches exist, pass the base lines directly without any allocation.
+    let search_gen = search.generation;
+    let has_matches = !search.matches.is_empty();
+
+    if has_matches && cache.highlight_search_gen != search_gen {
+        // Search state changed (query, matches, or current_match) -- recompute highlights
+        cache.highlighted_lines =
+            apply_search_highlights(&cache.lines, &search.matches, search.current_match);
+        cache.highlight_search_gen = search_gen;
+    } else if !has_matches {
+        // No active search -- clear highlight cache to free memory
+        if !cache.highlighted_lines.is_empty() {
+            cache.highlighted_lines = Vec::new();
+            cache.highlight_search_gen = 0;
+        }
+    }
+
+    let lines_to_render: &[Line<'static>] = if has_matches {
+        &cache.highlighted_lines
     } else {
-        cache.lines.clone()
+        &cache.lines
     };
 
-    // Use search generation to force cache invalidation when search changes
-    let effective_generation = cache.generation.wrapping_add(search.generation);
+    // Use search generation to force wrap cache invalidation when search changes
+    let effective_generation = cache.generation.wrapping_add(search_gen);
 
     let cursor = if editing {
         Some(response_editor.cursor())
@@ -1390,7 +1413,7 @@ fn render_response_body(
     render_wrapped_response_cached(
         frame,
         area,
-        &lines_to_render,
+        lines_to_render,
         &mut cache.wrap_cache,
         effective_generation,
         cursor,
@@ -1568,18 +1591,6 @@ fn render_response_headers(
         scroll_offset,
         editing,
     );
-}
-
-fn is_json_response(headers: &[(String, String)], body: &str) -> bool {
-    let has_json_content_type = headers.iter().any(|(k, v)| {
-        k.eq_ignore_ascii_case("content-type") && v.contains("application/json")
-    });
-    if has_json_content_type {
-        return true;
-    }
-    let trimmed = body.trim();
-    (trimmed.starts_with('{') && trimmed.ends_with('}'))
-        || (trimmed.starts_with('[') && trimmed.ends_with(']'))
 }
 
 fn colorize_json(json: &str) -> Vec<Line<'static>> {

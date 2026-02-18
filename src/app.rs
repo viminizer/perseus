@@ -114,9 +114,15 @@ pub fn format_size(bytes: usize) -> String {
     format!("{:.1} GB", gb)
 }
 
-fn is_json_like(headers: &[(String, String)], body: &str) -> bool {
+/// Checks whether the given headers and body represent JSON content.
+///
+/// Returns `true` if either:
+/// - A `Content-Type` header contains `application/json` (case-insensitive), or
+/// - The trimmed body starts/ends with `{}` or `[]` (structural sniffing).
+pub fn is_json_content(headers: &[(String, String)], body: &str) -> bool {
     let has_json_content_type = headers.iter().any(|(k, v)| {
-        k.eq_ignore_ascii_case("content-type") && v.to_ascii_lowercase().contains("application/json")
+        k.eq_ignore_ascii_case("content-type")
+            && v.to_ascii_lowercase().contains("application/json")
     });
     if has_json_content_type {
         return true;
@@ -127,7 +133,7 @@ fn is_json_like(headers: &[(String, String)], body: &str) -> bool {
 }
 
 fn format_json_if_possible(headers: &[(String, String)], body: &str) -> String {
-    if !is_json_like(headers, body) {
+    if !is_json_content(headers, body) {
         return body.to_string();
     }
     match serde_json::from_str::<Value>(body) {
@@ -216,10 +222,14 @@ impl Method {
             Method::Custom(s) => s.as_str(),
         }
     }
+}
 
-    pub fn from_str(value: &str) -> Self {
-        let upper = value.to_uppercase();
-        match upper.as_str() {
+impl std::str::FromStr for Method {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let upper = s.to_uppercase();
+        Ok(match upper.as_str() {
             "GET" => Method::Standard(HttpMethod::Get),
             "POST" => Method::Standard(HttpMethod::Post),
             "PUT" => Method::Standard(HttpMethod::Put),
@@ -228,9 +238,8 @@ impl Method {
             "HEAD" => Method::Standard(HttpMethod::Head),
             "OPTIONS" => Method::Standard(HttpMethod::Options),
             _ => Method::Custom(upper),
-        }
+        })
     }
-
 }
 
 impl From<HttpMethod> for Method {
@@ -416,7 +425,6 @@ pub struct KvFocus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[allow(dead_code)]
 pub enum Panel {
     Sidebar,
     #[default]
@@ -453,13 +461,28 @@ pub struct TextInput {
 impl TextInput {
     pub fn new(value: String) -> Self {
         Self {
-            cursor: value.len(),
+            cursor: value.chars().count(),
             value,
         }
     }
 
+    /// Convert the character-based cursor index to a byte offset in the string.
+    pub fn byte_offset(&self) -> usize {
+        self.value
+            .char_indices()
+            .nth(self.cursor)
+            .map(|(i, _)| i)
+            .unwrap_or(self.value.len())
+    }
+
+    /// Return the number of characters in the value.
+    pub fn char_count(&self) -> usize {
+        self.value.chars().count()
+    }
+
     pub fn insert_char(&mut self, ch: char) {
-        self.value.insert(self.cursor, ch);
+        let byte_pos = self.byte_offset();
+        self.value.insert(byte_pos, ch);
         self.cursor += 1;
     }
 
@@ -468,14 +491,16 @@ impl TextInput {
             return;
         }
         self.cursor -= 1;
-        self.value.remove(self.cursor);
+        let byte_pos = self.byte_offset();
+        self.value.remove(byte_pos);
     }
 
     pub fn delete(&mut self) {
-        if self.cursor >= self.value.len() {
+        if self.cursor >= self.char_count() {
             return;
         }
-        self.value.remove(self.cursor);
+        let byte_pos = self.byte_offset();
+        self.value.remove(byte_pos);
     }
 
     pub fn move_left(&mut self) {
@@ -485,7 +510,7 @@ impl TextInput {
     }
 
     pub fn move_right(&mut self) {
-        if self.cursor < self.value.len() {
+        if self.cursor < self.char_count() {
             self.cursor += 1;
         }
     }
@@ -563,6 +588,12 @@ pub struct ResponseSearch {
     pub current_match: usize,
     pub case_sensitive: bool,
     pub generation: u64,
+    /// Cache key: body generation at last computation
+    cached_body_generation: u64,
+    /// Cache key: query string at last computation
+    cached_query: String,
+    /// Cache key: case_sensitive flag at last computation
+    cached_case_sensitive: bool,
 }
 
 impl ResponseSearch {
@@ -575,6 +606,9 @@ impl ResponseSearch {
             current_match: 0,
             case_sensitive: false,
             generation: 0,
+            cached_body_generation: u64::MAX,
+            cached_query: String::new(),
+            cached_case_sensitive: false,
         }
     }
 
@@ -584,28 +618,40 @@ impl ResponseSearch {
         self.input = TextInput::new(String::new());
         self.matches.clear();
         self.current_match = 0;
+        self.cached_body_generation = u64::MAX;
+        self.cached_query.clear();
         self.generation = self.generation.wrapping_add(1);
     }
 
-    fn compute_matches(&mut self, text: &str) {
+    /// Compute search matches using byte offsets from the original text.
+    ///
+    /// Skips recomputation when the body, query, and case-sensitivity haven't
+    /// changed since the last call (fixes per-keystroke allocation for large
+    /// bodies). Uses char-aware comparison so byte offsets are always valid
+    /// against the original text, even for Unicode chars whose byte length
+    /// changes under `to_lowercase()` (e.g. German sharp-s).
+    fn compute_matches(&mut self, text: &str, body_generation: u64) {
+        let query_owned = self.input.value.clone();
+        let query = query_owned.as_str();
+        if self.cached_body_generation == body_generation
+            && self.cached_case_sensitive == self.case_sensitive
+            && self.cached_query == query
+        {
+            return;
+        }
         self.matches.clear();
         self.current_match = 0;
-        let query = self.input.value.as_str();
+        self.cached_body_generation = body_generation;
+        self.cached_case_sensitive = self.case_sensitive;
+        self.cached_query.clear();
+        self.cached_query.push_str(query);
         if query.is_empty() {
             self.generation = self.generation.wrapping_add(1);
             return;
         }
-        let (search_text, search_query);
-        if self.case_sensitive {
-            search_text = text.to_string();
-            search_query = query.to_string();
-        } else {
-            search_text = text.to_lowercase();
-            search_query = query.to_lowercase();
-        }
-
-        // Map byte offsets in the flat text to (line_index, byte_offset_in_line)
-        let mut line_start = 0;
+        // Build a line-start byte-offset table for mapping absolute byte
+        // positions into (line_index, offset_within_line) pairs.
+        let mut line_start: usize = 0;
         let lines: Vec<&str> = text.split('\n').collect();
         let mut line_byte_starts: Vec<usize> = Vec::with_capacity(lines.len());
         for line in &lines {
@@ -613,23 +659,110 @@ impl ResponseSearch {
             line_start += line.len() + 1; // +1 for '\n'
         }
 
-        let query_len = search_query.len();
-        let mut start = 0;
-        while let Some(pos) = search_text[start..].find(&search_query) {
-            let abs_pos = start + pos;
-            // Find which line this position belongs to
-            let line_index = match line_byte_starts.binary_search(&abs_pos) {
-                Ok(i) => i,
-                Err(i) => i.saturating_sub(1),
-            };
-            let line_offset = abs_pos - line_byte_starts[line_index];
-            self.matches.push(SearchMatch {
-                line_index,
-                byte_start: line_offset,
-                byte_end: line_offset + query_len,
-            });
-            start = abs_pos + 1;
+        if self.case_sensitive {
+            // Case-sensitive: plain byte-string search on original text.
+            // No allocation needed -- we search directly on the borrowed text.
+            let query_len = query.len();
+            let mut start: usize = 0;
+            while start + query_len <= text.len() {
+                if let Some(pos) = text[start..].find(query) {
+                    let abs_pos = start + pos;
+                    let line_index = match line_byte_starts.binary_search(&abs_pos) {
+                        Ok(i) => i,
+                        Err(i) => i.saturating_sub(1),
+                    };
+                    let line_offset = abs_pos - line_byte_starts[line_index];
+                    self.matches.push(SearchMatch {
+                        line_index,
+                        byte_start: line_offset,
+                        byte_end: line_offset + query_len,
+                    });
+                    start = abs_pos + 1;
+                } else {
+                    break;
+                }
+            }
+        } else {
+            // Case-insensitive: char-aware matching that records byte offsets
+            // from the *original* text. This avoids the to_lowercase()
+            // byte-length mismatch where e.g. the German sharp-s (2 bytes)
+            // lowercases to "ss" (2 bytes, different chars) causing offset
+            // drift between the lowercased copy and the original.
+            //
+            // Strategy: flatten both text and query into sequences of
+            // (lowercased_char, source_byte, source_byte_len) entries, then
+            // slide a window over the text sequence comparing lowercased chars.
+            // Byte ranges are derived from the original text positions.
+            let query_lower: Vec<char> =
+                query.chars().flat_map(|c| c.to_lowercase()).collect();
+            if query_lower.is_empty() {
+                self.generation = self.generation.wrapping_add(1);
+                return;
+            }
+
+            // Build flat sequence: each lowercased char maps back to its
+            // source char's byte position and byte length in the original text.
+            // Tuple: (lowercased_char, source_byte_offset, source_char_byte_len)
+            let mut flat: Vec<(char, usize, usize)> = Vec::with_capacity(text.len());
+            for (byte_idx, ch) in text.char_indices() {
+                let src_len = ch.len_utf8();
+                for lc in ch.to_lowercase() {
+                    flat.push((lc, byte_idx, src_len));
+                }
+            }
+
+            let qlen = query_lower.len();
+            let flen = flat.len();
+            if qlen > flen {
+                self.generation = self.generation.wrapping_add(1);
+                return;
+            }
+
+            let mut i: usize = 0;
+            while i + qlen <= flen {
+                let mut matched = true;
+                for j in 0..qlen {
+                    if flat[i + j].0 != query_lower[j] {
+                        matched = false;
+                        break;
+                    }
+                }
+                if matched {
+                    // Byte range in original text: from the source byte of the
+                    // first matched entry to the end of the source char of the
+                    // last matched entry.
+                    let match_byte_start = flat[i].1;
+                    let last = &flat[i + qlen - 1];
+                    let match_byte_end = last.1 + last.2;
+
+                    let line_index =
+                        match line_byte_starts.binary_search(&match_byte_start) {
+                            Ok(idx) => idx,
+                            Err(idx) => idx.saturating_sub(1),
+                        };
+                    let line_offset =
+                        match_byte_start - line_byte_starts[line_index];
+                    let byte_end_in_line =
+                        match_byte_end - line_byte_starts[line_index];
+
+                    self.matches.push(SearchMatch {
+                        line_index,
+                        byte_start: line_offset,
+                        byte_end: byte_end_in_line,
+                    });
+                }
+
+                // Advance to the next original-char boundary in the flat
+                // sequence to allow overlapping matches starting at different
+                // source characters.
+                let cur_src = flat[i].1;
+                i += 1;
+                while i < flen && flat[i].1 == cur_src {
+                    i += 1;
+                }
+            }
         }
+
         self.generation = self.generation.wrapping_add(1);
     }
 
@@ -787,77 +920,6 @@ impl RequestState {
         self.body_binary_path_editor.lines().join("")
     }
 
-    #[allow(dead_code)]
-    pub fn build_body_content(&self) -> http::BodyContent {
-        match self.body_mode {
-            BodyMode::Raw => {
-                let text = self.body_text();
-                if text.trim().is_empty() {
-                    http::BodyContent::None
-                } else {
-                    http::BodyContent::Raw(text)
-                }
-            }
-            BodyMode::Json => {
-                let text = self.body_text();
-                if text.trim().is_empty() {
-                    http::BodyContent::None
-                } else {
-                    http::BodyContent::Json(text)
-                }
-            }
-            BodyMode::Xml => {
-                let text = self.body_text();
-                if text.trim().is_empty() {
-                    http::BodyContent::None
-                } else {
-                    http::BodyContent::Xml(text)
-                }
-            }
-            BodyMode::FormUrlEncoded => {
-                let pairs: Vec<(String, String)> = self
-                    .body_form_pairs
-                    .iter()
-                    .filter(|p| p.enabled && !(p.key.is_empty() && p.value.is_empty()))
-                    .map(|p| (p.key.clone(), p.value.clone()))
-                    .collect();
-                if pairs.is_empty() {
-                    http::BodyContent::None
-                } else {
-                    http::BodyContent::FormUrlEncoded(pairs)
-                }
-            }
-            BodyMode::Multipart => {
-                let parts: Vec<http::MultipartPart> = self
-                    .body_multipart_fields
-                    .iter()
-                    .filter(|f| f.enabled && !f.key.is_empty())
-                    .map(|f| http::MultipartPart {
-                        key: f.key.clone(),
-                        value: f.value.clone(),
-                        field_type: match f.field_type {
-                            MultipartFieldType::Text => http::MultipartPartType::Text,
-                            MultipartFieldType::File => http::MultipartPartType::File,
-                        },
-                    })
-                    .collect();
-                if parts.is_empty() {
-                    http::BodyContent::None
-                } else {
-                    http::BodyContent::Multipart(parts)
-                }
-            }
-            BodyMode::Binary => {
-                let path = self.body_binary_path_text();
-                if path.trim().is_empty() {
-                    http::BodyContent::None
-                } else {
-                    http::BodyContent::Binary(path)
-                }
-            }
-        }
-    }
-
     pub fn auth_token_text(&self) -> String {
         self.auth_token_editor.lines().join("")
     }
@@ -876,25 +938,6 @@ impl RequestState {
 
     pub fn auth_key_value_text(&self) -> String {
         self.auth_key_value_editor.lines().join("")
-    }
-
-    #[allow(dead_code)]
-    pub fn build_auth_config(&self) -> http::AuthConfig {
-        match self.auth_type {
-            AuthType::NoAuth => http::AuthConfig::NoAuth,
-            AuthType::Bearer => http::AuthConfig::Bearer {
-                token: self.auth_token_text(),
-            },
-            AuthType::Basic => http::AuthConfig::Basic {
-                username: self.auth_username_text(),
-                password: self.auth_password_text(),
-            },
-            AuthType::ApiKey => http::AuthConfig::ApiKey {
-                key: self.auth_key_name_text(),
-                value: self.auth_key_value_text(),
-                location: self.api_key_location,
-            },
-        }
     }
 
     pub fn active_editor(
@@ -949,6 +992,12 @@ pub(crate) struct ResponseBodyRenderCache {
     pub(crate) is_json: bool,
     pub(crate) lines: Vec<Line<'static>>,
     pub(crate) wrap_cache: WrapCache,
+    /// Cached lines with search highlights applied. Avoids cloning all lines
+    /// every frame when search is active. Invalidated by `highlight_search_gen`.
+    pub(crate) highlighted_lines: Vec<Line<'static>>,
+    /// The search generation that produced `highlighted_lines`. When this differs
+    /// from `ResponseSearch::generation`, the highlight cache is stale.
+    pub(crate) highlight_search_gen: u64,
 }
 
 impl ResponseBodyRenderCache {
@@ -960,6 +1009,8 @@ impl ResponseBodyRenderCache {
             is_json: false,
             lines: Vec::new(),
             wrap_cache: WrapCache::new(),
+            highlighted_lines: Vec::new(),
+            highlight_search_gen: 0,
         }
     }
 }
@@ -1032,6 +1083,8 @@ pub struct App {
     pub kv_edit_textarea: Option<TextArea<'static>>,
     pub save_popup: Option<TextInput>,
     pub response_search: ResponseSearch,
+    /// Actual height (in rows) of the response content area, updated each render frame.
+    pub response_viewport_height: u16,
 }
 
 impl App {
@@ -1221,6 +1274,7 @@ impl App {
             kv_edit_textarea: None,
             save_popup: None,
             response_search: ResponseSearch::new(),
+            response_viewport_height: 20,
         };
 
         if let Some(request_id) = created_request_id {
@@ -1479,7 +1533,7 @@ impl App {
                 let method = if node.kind == NodeKind::Request {
                     node.request_method
                         .as_deref()
-                        .map(Method::from_str)
+                        .map(|s| s.parse::<Method>().unwrap())
                 } else {
                     None
                 };
@@ -1516,7 +1570,7 @@ impl App {
             let method = if node.kind == NodeKind::Request {
                 node.request_method
                     .as_deref()
-                    .map(Method::from_str)
+                    .map(|s| s.parse::<Method>().unwrap())
             } else {
                 None
             };
@@ -1755,7 +1809,7 @@ impl App {
             .get_item(request_id)
             .and_then(|item| item.request.clone());
         if let Some(request) = request_data {
-            let method = Method::from_str(&request.method);
+            let method = request.method.parse::<Method>().unwrap();
             let url = extract_url(&request.url);
             let headers = headers_to_text(&request.header);
             let raw_body = request
@@ -2287,10 +2341,12 @@ impl App {
             // The wrap cache maps logical lines to visual lines, but we don't have
             // access to it here. Use the logical line_index as an approximation.
             let target_line = m.line_index as u16;
-            // If target is not visible, scroll to it
-            // We don't know the exact viewport height here, use a reasonable default
-            if target_line < self.response_scroll || target_line > self.response_scroll + 20 {
-                self.response_scroll = target_line.saturating_sub(3);
+            let viewport_height = self.response_viewport_height.max(1);
+            // If target is not visible, scroll to center it in the viewport
+            if target_line < self.response_scroll
+                || target_line >= self.response_scroll + viewport_height
+            {
+                self.response_scroll = target_line.saturating_sub(viewport_height / 3);
             }
             // Invalidate wrap cache to force re-render with highlight changes
             self.response_body_cache.wrap_cache.generation = 0;
@@ -2324,23 +2380,83 @@ impl App {
     }
 
     fn save_response_to_file(&mut self, raw_path: &str) {
-        let path_str = if let Some(rest) = raw_path.strip_prefix("~/") {
-            if let Ok(home) = std::env::var("HOME") {
-                format!("{}/{}", home, rest)
-            } else {
-                raw_path.to_string()
+        let trimmed = raw_path.trim();
+        if trimmed.is_empty() {
+            self.set_clipboard_toast("Save failed: empty path");
+            return;
+        }
+
+        // Expand tilde: handle both "~" alone and "~/..." prefix
+        let path_str = if trimmed == "~" {
+            match std::env::var("HOME") {
+                Ok(home) => home,
+                Err(_) => {
+                    self.set_clipboard_toast("Save failed: could not resolve home directory");
+                    return;
+                }
+            }
+        } else if let Some(rest) = trimmed.strip_prefix("~/") {
+            match std::env::var("HOME") {
+                Ok(home) => format!("{}/{}", home, rest),
+                Err(_) => {
+                    self.set_clipboard_toast("Save failed: could not resolve home directory");
+                    return;
+                }
             }
         } else {
-            raw_path.to_string()
+            trimmed.to_string()
         };
-        let path = std::path::Path::new(&path_str);
 
-        if let Some(parent) = path.parent() {
+        let path = std::path::PathBuf::from(&path_str);
+
+        // Reject paths containing traversal components
+        for component in path.components() {
+            if matches!(component, std::path::Component::ParentDir) {
+                self.set_clipboard_toast("Save failed: path must not contain '..' traversal");
+                return;
+            }
+        }
+
+        // Resolve to an absolute path so we can validate the final location
+        let resolved = if path.is_absolute() {
+            path.clone()
+        } else {
+            match std::env::current_dir() {
+                Ok(cwd) => cwd.join(&path),
+                Err(_) => {
+                    self.set_clipboard_toast("Save failed: could not determine working directory");
+                    return;
+                }
+            }
+        };
+
+        // Validate parent directory exists
+        if let Some(parent) = resolved.parent() {
             if !parent.as_os_str().is_empty() && !parent.exists() {
                 self.set_clipboard_toast("Save failed: directory does not exist");
                 return;
             }
         }
+
+        // Canonicalize the parent to catch symlink-based traversal, then re-append filename
+        let canonical_path = if let Some(parent) = resolved.parent() {
+            if parent.as_os_str().is_empty() {
+                resolved.clone()
+            } else {
+                match parent.canonicalize() {
+                    Ok(canon_parent) => match resolved.file_name() {
+                        Some(name) => canon_parent.join(name),
+                        None => canon_parent,
+                    },
+                    Err(err) => {
+                        self.set_clipboard_toast(format!("Save failed: {}", err));
+                        return;
+                    }
+                }
+            }
+        } else {
+            resolved.clone()
+        };
 
         if !matches!(self.response, ResponseStatus::Success(_)) {
             self.set_clipboard_toast("No response to save");
@@ -2352,10 +2468,10 @@ impl App {
             ResponseTab::Headers => self.response_headers_editor.lines().join("\n"),
         };
 
-        match std::fs::write(path, &content) {
+        match std::fs::write(&canonical_path, &content) {
             Ok(_) => {
                 let size = format_size(content.len());
-                self.set_clipboard_toast(format!("Saved to {} ({})", raw_path, size));
+                self.set_clipboard_toast(format!("Saved to {} ({})", trimmed, size));
             }
             Err(err) => {
                 self.set_clipboard_toast(format!("Save failed: {}", err));
@@ -2546,6 +2662,57 @@ impl App {
             YankTarget::ResponseBody => self.last_yank_response = text,
             YankTarget::ResponseHeaders => self.last_yank_response_headers = text,
         }
+    }
+
+    /// Toggle the environment quick-switch popup, closing any other open popups first.
+    /// If the popup is being opened, pre-selects the currently active environment.
+    fn toggle_env_popup(&mut self) {
+        self.show_method_popup = false;
+        self.show_auth_type_popup = false;
+        self.show_body_mode_popup = false;
+        self.show_env_popup = !self.show_env_popup;
+        if self.show_env_popup {
+            self.env_popup_index = self
+                .active_environment_name
+                .as_ref()
+                .and_then(|name| self.environments.iter().position(|e| e.name == *name))
+                .map(|i| i + 1)
+                .unwrap_or(0);
+        }
+        self.dirty = true;
+    }
+
+    /// Handle keyboard input when the environment popup is open.
+    /// Returns `true` if the key was consumed by the popup, `false` otherwise.
+    fn handle_env_popup_input(&mut self, key: KeyEvent) -> bool {
+        if !self.show_env_popup {
+            return false;
+        }
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                let count = self.environments.len() + 1; // +1 for "No Environment"
+                self.env_popup_index = (self.env_popup_index + 1) % count;
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                let count = self.environments.len() + 1;
+                self.env_popup_index =
+                    (self.env_popup_index + count - 1) % count;
+            }
+            KeyCode::Enter => {
+                self.active_environment_name = if self.env_popup_index == 0 {
+                    None
+                } else {
+                    Some(self.environments[self.env_popup_index - 1].name.clone())
+                };
+                self.show_env_popup = false;
+            }
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.show_env_popup = false;
+            }
+            _ => {}
+        }
+        self.dirty = true;
+        true
     }
 
     fn sync_clipboard_from_active_yank(&mut self) {
@@ -3052,31 +3219,7 @@ impl App {
         }
 
         // Handle environment popup when open
-        if self.show_env_popup {
-            match key.code {
-                KeyCode::Char('j') | KeyCode::Down => {
-                    let count = self.environments.len() + 1; // +1 for "No Environment"
-                    self.env_popup_index = (self.env_popup_index + 1) % count;
-                }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    let count = self.environments.len() + 1;
-                    self.env_popup_index =
-                        (self.env_popup_index + count - 1) % count;
-                }
-                KeyCode::Enter => {
-                    self.active_environment_name = if self.env_popup_index == 0 {
-                        None
-                    } else {
-                        Some(self.environments[self.env_popup_index - 1].name.clone())
-                    };
-                    self.show_env_popup = false;
-                }
-                KeyCode::Esc | KeyCode::Char('q') => {
-                    self.show_env_popup = false;
-                }
-                _ => {}
-            }
-            self.dirty = true;
+        if self.handle_env_popup_input(key) {
             return;
         }
 
@@ -3261,19 +3404,7 @@ impl App {
 
         // Ctrl+N: environment quick-switch popup
         if key.code == KeyCode::Char('n') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            self.show_method_popup = false;
-            self.show_auth_type_popup = false;
-            self.show_body_mode_popup = false;
-            self.show_env_popup = !self.show_env_popup;
-            if self.show_env_popup {
-                self.env_popup_index = self
-                    .active_environment_name
-                    .as_ref()
-                    .and_then(|name| self.environments.iter().position(|e| e.name == *name))
-                    .map(|i| i + 1)
-                    .unwrap_or(0);
-            }
-            self.dirty = true;
+            self.toggle_env_popup();
             return;
         }
 
@@ -3492,21 +3623,14 @@ impl App {
             return;
         }
 
+        // Handle environment popup when open
+        if self.handle_env_popup_input(key) {
+            return;
+        }
+
         // Ctrl+N: environment quick-switch popup from sidebar mode
         if key.code == KeyCode::Char('n') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            self.show_method_popup = false;
-            self.show_auth_type_popup = false;
-            self.show_body_mode_popup = false;
-            self.show_env_popup = !self.show_env_popup;
-            if self.show_env_popup {
-                self.env_popup_index = self
-                    .active_environment_name
-                    .as_ref()
-                    .and_then(|name| self.environments.iter().position(|e| e.name == *name))
-                    .map(|i| i + 1)
-                    .unwrap_or(0);
-            }
-            self.dirty = true;
+            self.toggle_env_popup();
             return;
         }
 
@@ -3534,6 +3658,11 @@ impl App {
         key: KeyEvent,
         tx: mpsc::Sender<Result<ResponseData, String>>,
     ) {
+        // Handle environment popup when open
+        if self.handle_env_popup_input(key) {
+            return;
+        }
+
         // Ctrl+S: save current request
         if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
             if let Some(request_id) = self.current_request_id {
@@ -3558,19 +3687,7 @@ impl App {
 
         // Ctrl+N: environment quick-switch popup, even in editing mode
         if key.code == KeyCode::Char('n') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            self.show_method_popup = false;
-            self.show_auth_type_popup = false;
-            self.show_body_mode_popup = false;
-            self.show_env_popup = !self.show_env_popup;
-            if self.show_env_popup {
-                self.env_popup_index = self
-                    .active_environment_name
-                    .as_ref()
-                    .and_then(|name| self.environments.iter().position(|e| e.name == *name))
-                    .map(|i| i + 1)
-                    .unwrap_or(0);
-            }
-            self.dirty = true;
+            self.toggle_env_popup();
             return;
         }
 
@@ -3647,12 +3764,14 @@ impl App {
                 {
                     self.response_search.case_sensitive = !self.response_search.case_sensitive;
                     let body_text = self.response_body_cache.body_text.clone();
-                    self.response_search.compute_matches(&body_text);
+                    let gen = self.response_body_cache.generation;
+                    self.response_search.compute_matches(&body_text, gen);
                 }
                 _ => {
                     handle_text_input(&mut self.response_search.input, key);
                     let body_text = self.response_body_cache.body_text.clone();
-                    self.response_search.compute_matches(&body_text);
+                    let gen = self.response_body_cache.generation;
+                    self.response_search.compute_matches(&body_text, gen);
                 }
             }
             // Auto-scroll to current match
@@ -3672,7 +3791,7 @@ impl App {
                     self.response_search.input = TextInput::new(
                         self.response_search.query.clone(),
                     );
-                    self.response_search.input.cursor = self.response_search.input.value.len();
+                    self.response_search.input.cursor = self.response_search.input.char_count();
                     return;
                 }
                 KeyCode::Char('n') if !self.response_search.query.is_empty() => {
@@ -3790,13 +3909,15 @@ impl App {
                 } else if let Some(textarea) = self.kv_edit_textarea.as_mut() {
                     self.vim = std::mem::replace(&mut self.vim, Vim::new(VimMode::Normal))
                         .apply_transition(Transition::Mode(new_mode), textarea);
-                } else {
-                    let textarea = self
-                        .request
-                        .active_editor(self.focus.request_field, self.focus.body_field)
-                        .unwrap();
+                } else if let Some(textarea) = self
+                    .request
+                    .active_editor(self.focus.request_field, self.focus.body_field)
+                {
                     self.vim = std::mem::replace(&mut self.vim, Vim::new(VimMode::Normal))
                         .apply_transition(Transition::Mode(new_mode), textarea);
+                } else {
+                    self.exit_editing();
+                    return;
                 }
                 self.update_terminal_cursor();
                 self.sync_clipboard_from_active_yank();
@@ -3819,13 +3940,14 @@ impl App {
                 } else if let Some(textarea) = self.kv_edit_textarea.as_mut() {
                     self.vim = std::mem::replace(&mut self.vim, Vim::new(VimMode::Normal))
                         .apply_transition(Transition::Pending(pending_input), textarea);
-                } else {
-                    let textarea = self
-                        .request
-                        .active_editor(self.focus.request_field, self.focus.body_field)
-                        .unwrap();
+                } else if let Some(textarea) = self
+                    .request
+                    .active_editor(self.focus.request_field, self.focus.body_field)
+                {
                     self.vim = std::mem::replace(&mut self.vim, Vim::new(VimMode::Normal))
                         .apply_transition(Transition::Pending(pending_input), textarea);
+                } else {
+                    self.exit_editing();
                 }
             }
             Transition::Nop => {}
@@ -4619,7 +4741,7 @@ impl App {
         if self.focus.request_field == RequestField::Auth {
             self.active_auth_editor()
         } else {
-            self.active_request_editor()
+            self.request.active_editor(self.focus.request_field, self.focus.body_field)
         }
     }
 }
@@ -4705,7 +4827,7 @@ fn handle_text_input(input: &mut TextInput, key: KeyEvent) {
         KeyCode::Left => input.move_left(),
         KeyCode::Right => input.move_right(),
         KeyCode::Home => input.cursor = 0,
-        KeyCode::End => input.cursor = input.value.len(),
+        KeyCode::End => input.cursor = input.char_count(),
         _ => {}
     }
 }
