@@ -1036,55 +1036,55 @@ impl ResponseHeadersRenderCache {
 pub struct App {
     running: bool,
     dirty: bool,
-    pub config: Config,
-    pub request: RequestState,
-    pub focus: FocusState,
-    pub response: ResponseStatus,
-    pub response_tab: ResponseTab,
-    pub request_tab: RequestTab,
-    pub client: Client,
-    pub app_mode: AppMode,
-    pub vim: Vim,
-    pub response_scroll: u16,
-    pub loading_tick: u8,
-    pub show_help: bool,
-    pub show_method_popup: bool,
-    pub method_popup_index: usize,
-    pub method_popup_custom_mode: bool,
-    pub method_custom_input: String,
-    pub show_auth_type_popup: bool,
-    pub auth_type_popup_index: usize,
-    pub sidebar_visible: bool,
-    pub sidebar_width: u16,
-    pub collection: CollectionStore,
-    pub project_list: Vec<ProjectInfo>,
-    pub sidebar_tree: ProjectTree,
-    pub sidebar: SidebarState,
+    config: Config,
+    pub(crate) request: RequestState,
+    pub(crate) focus: FocusState,
+    pub(crate) response: ResponseStatus,
+    pub(crate) response_tab: ResponseTab,
+    pub(crate) request_tab: RequestTab,
+    client: Client,
+    pub(crate) app_mode: AppMode,
+    pub(crate) vim: Vim,
+    pub(crate) response_scroll: u16,
+    pub(crate) loading_tick: u8,
+    pub(crate) show_help: bool,
+    pub(crate) show_method_popup: bool,
+    pub(crate) method_popup_index: usize,
+    pub(crate) method_popup_custom_mode: bool,
+    pub(crate) method_custom_input: String,
+    pub(crate) show_auth_type_popup: bool,
+    pub(crate) auth_type_popup_index: usize,
+    pub(crate) sidebar_visible: bool,
+    pub(crate) sidebar_width: u16,
+    collection: CollectionStore,
+    pub(crate) project_list: Vec<ProjectInfo>,
+    pub(crate) sidebar_tree: ProjectTree,
+    pub(crate) sidebar: SidebarState,
     sidebar_cache: SidebarCache,
-    pub active_project_id: Uuid,
-    pub current_request_id: Option<Uuid>,
-    pub request_dirty: bool,
+    pub(crate) active_project_id: Uuid,
+    current_request_id: Option<Uuid>,
+    request_dirty: bool,
     clipboard_toast: Option<(String, Instant)>,
     request_handle: Option<tokio::task::AbortHandle>,
     clipboard: ClipboardProvider,
     last_yank_request: String,
     last_yank_response: String,
     last_yank_response_headers: String,
-    pub response_editor: TextArea<'static>,
-    pub response_headers_editor: TextArea<'static>,
+    pub(crate) response_editor: TextArea<'static>,
+    pub(crate) response_headers_editor: TextArea<'static>,
     pub(crate) response_body_cache: ResponseBodyRenderCache,
     pub(crate) response_headers_cache: ResponseHeadersRenderCache,
-    pub environments: Vec<Environment>,
-    pub active_environment_name: Option<String>,
-    pub show_env_popup: bool,
-    pub env_popup_index: usize,
-    pub show_body_mode_popup: bool,
-    pub body_mode_popup_index: usize,
-    pub kv_edit_textarea: Option<TextArea<'static>>,
-    pub save_popup: Option<TextInput>,
-    pub response_search: ResponseSearch,
+    pub(crate) environments: Vec<Environment>,
+    pub(crate) active_environment_name: Option<String>,
+    pub(crate) show_env_popup: bool,
+    pub(crate) env_popup_index: usize,
+    pub(crate) show_body_mode_popup: bool,
+    pub(crate) body_mode_popup_index: usize,
+    pub(crate) kv_edit_textarea: Option<TextArea<'static>>,
+    pub(crate) save_popup: Option<TextInput>,
+    pub(crate) response_search: ResponseSearch,
     /// Actual height (in rows) of the response content area, updated each render frame.
-    pub response_viewport_height: u16,
+    pub(crate) response_viewport_height: u16,
 }
 
 impl App {
@@ -4854,5 +4854,668 @@ fn parse_add_path(raw: &str) -> (Vec<String>, Option<String>) {
         let mut folders = parts.clone();
         let request = folders.pop();
         (folders, request)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // format_size
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn format_size_zero_bytes() {
+        assert_eq!(format_size(0), "0 B");
+    }
+
+    #[test]
+    fn format_size_small_bytes() {
+        assert_eq!(format_size(1), "1 B");
+        assert_eq!(format_size(500), "500 B");
+        assert_eq!(format_size(1023), "1023 B");
+    }
+
+    #[test]
+    fn format_size_exact_one_kb() {
+        assert_eq!(format_size(1024), "1.0 KB");
+    }
+
+    #[test]
+    fn format_size_fractional_kb() {
+        assert_eq!(format_size(1536), "1.5 KB");
+    }
+
+    #[test]
+    fn format_size_large_kb() {
+        // 500 KB = 512000 bytes
+        assert_eq!(format_size(512_000), "500.0 KB");
+    }
+
+    #[test]
+    fn format_size_exact_one_mb() {
+        assert_eq!(format_size(1_048_576), "1.0 MB");
+    }
+
+    #[test]
+    fn format_size_fractional_mb() {
+        // 1.5 MB = 1_572_864 bytes
+        assert_eq!(format_size(1_572_864), "1.5 MB");
+    }
+
+    #[test]
+    fn format_size_exact_one_gb() {
+        assert_eq!(format_size(1_073_741_824), "1.0 GB");
+    }
+
+    #[test]
+    fn format_size_fractional_gb() {
+        // 2.5 GB = 2_684_354_560 bytes
+        assert_eq!(format_size(2_684_354_560), "2.5 GB");
+    }
+
+    #[test]
+    fn format_size_boundary_below_kb() {
+        // 1023 bytes is still in the bytes range
+        assert_eq!(format_size(1023), "1023 B");
+    }
+
+    // -----------------------------------------------------------------------
+    // is_json_content
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn is_json_content_with_json_content_type() {
+        let headers = vec![
+            ("Content-Type".to_string(), "application/json".to_string()),
+        ];
+        assert!(is_json_content(&headers, ""));
+    }
+
+    #[test]
+    fn is_json_content_with_json_content_type_charset() {
+        let headers = vec![(
+            "Content-Type".to_string(),
+            "application/json; charset=utf-8".to_string(),
+        )];
+        assert!(is_json_content(&headers, "not json body"));
+    }
+
+    #[test]
+    fn is_json_content_case_insensitive_header_key() {
+        let headers = vec![
+            ("content-type".to_string(), "application/json".to_string()),
+        ];
+        assert!(is_json_content(&headers, ""));
+    }
+
+    #[test]
+    fn is_json_content_case_insensitive_header_value() {
+        let headers = vec![
+            ("Content-Type".to_string(), "APPLICATION/JSON".to_string()),
+        ];
+        assert!(is_json_content(&headers, ""));
+    }
+
+    #[test]
+    fn is_json_content_no_header_body_object() {
+        let headers: Vec<(String, String)> = vec![];
+        assert!(is_json_content(&headers, r#"{"key": "value"}"#));
+    }
+
+    #[test]
+    fn is_json_content_no_header_body_array() {
+        let headers: Vec<(String, String)> = vec![];
+        assert!(is_json_content(&headers, "[1, 2, 3]"));
+    }
+
+    #[test]
+    fn is_json_content_body_with_whitespace() {
+        let headers: Vec<(String, String)> = vec![];
+        assert!(is_json_content(&headers, "  { \"a\": 1 }  "));
+    }
+
+    #[test]
+    fn is_json_content_empty_body_no_header() {
+        let headers: Vec<(String, String)> = vec![];
+        assert!(!is_json_content(&headers, ""));
+    }
+
+    #[test]
+    fn is_json_content_plain_text_body() {
+        let headers: Vec<(String, String)> = vec![];
+        assert!(!is_json_content(&headers, "hello world"));
+    }
+
+    #[test]
+    fn is_json_content_html_body() {
+        let headers = vec![
+            ("Content-Type".to_string(), "text/html".to_string()),
+        ];
+        assert!(!is_json_content(&headers, "<html></html>"));
+    }
+
+    #[test]
+    fn is_json_content_mismatched_braces() {
+        let headers: Vec<(String, String)> = vec![];
+        // Starts with { but ends with ]
+        assert!(!is_json_content(&headers, "{data]"));
+    }
+
+    #[test]
+    fn is_json_content_mismatched_brackets() {
+        let headers: Vec<(String, String)> = vec![];
+        // Starts with [ but ends with }
+        assert!(!is_json_content(&headers, "[data}"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Method FromStr
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn method_from_str_get() {
+        let m: Method = "GET".parse().unwrap();
+        assert_eq!(m, Method::Standard(HttpMethod::Get));
+    }
+
+    #[test]
+    fn method_from_str_post() {
+        let m: Method = "POST".parse().unwrap();
+        assert_eq!(m, Method::Standard(HttpMethod::Post));
+    }
+
+    #[test]
+    fn method_from_str_put() {
+        let m: Method = "PUT".parse().unwrap();
+        assert_eq!(m, Method::Standard(HttpMethod::Put));
+    }
+
+    #[test]
+    fn method_from_str_patch() {
+        let m: Method = "PATCH".parse().unwrap();
+        assert_eq!(m, Method::Standard(HttpMethod::Patch));
+    }
+
+    #[test]
+    fn method_from_str_delete() {
+        let m: Method = "DELETE".parse().unwrap();
+        assert_eq!(m, Method::Standard(HttpMethod::Delete));
+    }
+
+    #[test]
+    fn method_from_str_head() {
+        let m: Method = "HEAD".parse().unwrap();
+        assert_eq!(m, Method::Standard(HttpMethod::Head));
+    }
+
+    #[test]
+    fn method_from_str_options() {
+        let m: Method = "OPTIONS".parse().unwrap();
+        assert_eq!(m, Method::Standard(HttpMethod::Options));
+    }
+
+    #[test]
+    fn method_from_str_case_insensitive() {
+        let m: Method = "get".parse().unwrap();
+        assert_eq!(m, Method::Standard(HttpMethod::Get));
+
+        let m: Method = "Post".parse().unwrap();
+        assert_eq!(m, Method::Standard(HttpMethod::Post));
+
+        let m: Method = "dElEtE".parse().unwrap();
+        assert_eq!(m, Method::Standard(HttpMethod::Delete));
+    }
+
+    #[test]
+    fn method_from_str_custom_method() {
+        let m: Method = "PURGE".parse().unwrap();
+        assert_eq!(m, Method::Custom("PURGE".to_string()));
+    }
+
+    #[test]
+    fn method_from_str_custom_method_uppercased() {
+        let m: Method = "purge".parse().unwrap();
+        // Custom methods are stored in uppercase
+        assert_eq!(m, Method::Custom("PURGE".to_string()));
+    }
+
+    #[test]
+    fn method_as_str_standard() {
+        let m = Method::Standard(HttpMethod::Get);
+        assert_eq!(m.as_str(), "GET");
+    }
+
+    #[test]
+    fn method_as_str_custom() {
+        let m = Method::Custom("PURGE".to_string());
+        assert_eq!(m.as_str(), "PURGE");
+    }
+
+    // -----------------------------------------------------------------------
+    // TextInput
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn text_input_new_empty() {
+        let ti = TextInput::new(String::new());
+        assert_eq!(ti.value, "");
+        assert_eq!(ti.cursor, 0);
+        assert_eq!(ti.char_count(), 0);
+    }
+
+    #[test]
+    fn text_input_new_with_value() {
+        let ti = TextInput::new("hello".to_string());
+        assert_eq!(ti.value, "hello");
+        // Cursor starts at end
+        assert_eq!(ti.cursor, 5);
+        assert_eq!(ti.char_count(), 5);
+    }
+
+    #[test]
+    fn text_input_new_unicode() {
+        // Each emoji is one char but multiple bytes
+        let ti = TextInput::new("cafe\u{0301}".to_string());
+        // "cafe\u{0301}" has 5 chars (c, a, f, e, combining acute)
+        assert_eq!(ti.char_count(), 5);
+        assert_eq!(ti.cursor, 5);
+    }
+
+    #[test]
+    fn text_input_insert_char_at_end() {
+        let mut ti = TextInput::new("ab".to_string());
+        ti.insert_char('c');
+        assert_eq!(ti.value, "abc");
+        assert_eq!(ti.cursor, 3);
+    }
+
+    #[test]
+    fn text_input_insert_char_at_beginning() {
+        let mut ti = TextInput::new("bc".to_string());
+        ti.cursor = 0;
+        ti.insert_char('a');
+        assert_eq!(ti.value, "abc");
+        assert_eq!(ti.cursor, 1);
+    }
+
+    #[test]
+    fn text_input_insert_char_in_middle() {
+        let mut ti = TextInput::new("ac".to_string());
+        ti.cursor = 1;
+        ti.insert_char('b');
+        assert_eq!(ti.value, "abc");
+        assert_eq!(ti.cursor, 2);
+    }
+
+    #[test]
+    fn text_input_insert_unicode_char() {
+        let mut ti = TextInput::new(String::new());
+        ti.insert_char('\u{1F600}'); // grinning face emoji
+        assert_eq!(ti.value, "\u{1F600}");
+        assert_eq!(ti.cursor, 1);
+        assert_eq!(ti.char_count(), 1);
+    }
+
+    #[test]
+    fn text_input_backspace_at_end() {
+        let mut ti = TextInput::new("abc".to_string());
+        ti.backspace();
+        assert_eq!(ti.value, "ab");
+        assert_eq!(ti.cursor, 2);
+    }
+
+    #[test]
+    fn text_input_backspace_at_beginning() {
+        let mut ti = TextInput::new("abc".to_string());
+        ti.cursor = 0;
+        ti.backspace();
+        // No change when at beginning
+        assert_eq!(ti.value, "abc");
+        assert_eq!(ti.cursor, 0);
+    }
+
+    #[test]
+    fn text_input_backspace_in_middle() {
+        let mut ti = TextInput::new("abc".to_string());
+        ti.cursor = 2;
+        ti.backspace();
+        assert_eq!(ti.value, "ac");
+        assert_eq!(ti.cursor, 1);
+    }
+
+    #[test]
+    fn text_input_delete_at_cursor() {
+        let mut ti = TextInput::new("abc".to_string());
+        ti.cursor = 1;
+        ti.delete();
+        assert_eq!(ti.value, "ac");
+        assert_eq!(ti.cursor, 1);
+    }
+
+    #[test]
+    fn text_input_delete_at_end() {
+        let mut ti = TextInput::new("abc".to_string());
+        // Cursor at end, delete should be no-op
+        ti.delete();
+        assert_eq!(ti.value, "abc");
+        assert_eq!(ti.cursor, 3);
+    }
+
+    #[test]
+    fn text_input_delete_at_beginning() {
+        let mut ti = TextInput::new("abc".to_string());
+        ti.cursor = 0;
+        ti.delete();
+        assert_eq!(ti.value, "bc");
+        assert_eq!(ti.cursor, 0);
+    }
+
+    #[test]
+    fn text_input_move_left() {
+        let mut ti = TextInput::new("abc".to_string());
+        assert_eq!(ti.cursor, 3);
+        ti.move_left();
+        assert_eq!(ti.cursor, 2);
+        ti.move_left();
+        assert_eq!(ti.cursor, 1);
+        ti.move_left();
+        assert_eq!(ti.cursor, 0);
+        // Should not go below 0
+        ti.move_left();
+        assert_eq!(ti.cursor, 0);
+    }
+
+    #[test]
+    fn text_input_move_right() {
+        let mut ti = TextInput::new("abc".to_string());
+        ti.cursor = 0;
+        ti.move_right();
+        assert_eq!(ti.cursor, 1);
+        ti.move_right();
+        assert_eq!(ti.cursor, 2);
+        ti.move_right();
+        assert_eq!(ti.cursor, 3);
+        // Should not go beyond char count
+        ti.move_right();
+        assert_eq!(ti.cursor, 3);
+    }
+
+    #[test]
+    fn text_input_byte_offset_ascii() {
+        let ti = TextInput::new("abc".to_string());
+        // Cursor at 3 (end), byte offset is 3
+        assert_eq!(ti.byte_offset(), 3);
+    }
+
+    #[test]
+    fn text_input_byte_offset_unicode() {
+        // "\u{1F600}" is 4 bytes, "ab" is 2 bytes
+        let mut ti = TextInput::new("\u{1F600}ab".to_string());
+        ti.cursor = 0;
+        assert_eq!(ti.byte_offset(), 0);
+        ti.cursor = 1; // After emoji
+        assert_eq!(ti.byte_offset(), 4);
+        ti.cursor = 2; // After emoji + 'a'
+        assert_eq!(ti.byte_offset(), 5);
+        ti.cursor = 3; // After emoji + 'ab'
+        assert_eq!(ti.byte_offset(), 6);
+    }
+
+    #[test]
+    fn text_input_insert_into_unicode_string() {
+        let mut ti = TextInput::new("\u{1F600}b".to_string());
+        ti.cursor = 1; // After emoji, before 'b'
+        ti.insert_char('a');
+        assert_eq!(ti.value, "\u{1F600}ab");
+        assert_eq!(ti.cursor, 2);
+    }
+
+    #[test]
+    fn text_input_backspace_unicode_char() {
+        let mut ti = TextInput::new("a\u{1F600}b".to_string());
+        ti.cursor = 2; // After emoji
+        ti.backspace();
+        assert_eq!(ti.value, "ab");
+        assert_eq!(ti.cursor, 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // ResponseSearch::compute_matches - case sensitive
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn search_case_sensitive_single_match() {
+        let mut search = ResponseSearch::new();
+        search.case_sensitive = true;
+        search.input = TextInput::new("hello".to_string());
+        search.compute_matches("hello world", 1);
+        assert_eq!(search.matches.len(), 1);
+        assert_eq!(search.matches[0].line_index, 0);
+        assert_eq!(search.matches[0].byte_start, 0);
+        assert_eq!(search.matches[0].byte_end, 5);
+    }
+
+    #[test]
+    fn search_case_sensitive_multiple_matches() {
+        let mut search = ResponseSearch::new();
+        search.case_sensitive = true;
+        search.input = TextInput::new("ab".to_string());
+        search.compute_matches("ab cd ab ef ab", 1);
+        assert_eq!(search.matches.len(), 3);
+        assert_eq!(search.matches[0].byte_start, 0);
+        assert_eq!(search.matches[1].byte_start, 6);
+        assert_eq!(search.matches[2].byte_start, 12);
+    }
+
+    #[test]
+    fn search_case_sensitive_no_match() {
+        let mut search = ResponseSearch::new();
+        search.case_sensitive = true;
+        search.input = TextInput::new("Hello".to_string());
+        search.compute_matches("hello world", 1);
+        assert_eq!(search.matches.len(), 0);
+    }
+
+    #[test]
+    fn search_case_sensitive_empty_query() {
+        let mut search = ResponseSearch::new();
+        search.case_sensitive = true;
+        search.input = TextInput::new(String::new());
+        search.compute_matches("hello world", 1);
+        assert_eq!(search.matches.len(), 0);
+    }
+
+    #[test]
+    fn search_case_sensitive_empty_text() {
+        let mut search = ResponseSearch::new();
+        search.case_sensitive = true;
+        search.input = TextInput::new("hello".to_string());
+        search.compute_matches("", 1);
+        assert_eq!(search.matches.len(), 0);
+    }
+
+    #[test]
+    fn search_case_sensitive_multiline() {
+        let mut search = ResponseSearch::new();
+        search.case_sensitive = true;
+        search.input = TextInput::new("foo".to_string());
+        search.compute_matches("line1 foo\nline2\nline3 foo bar", 1);
+        assert_eq!(search.matches.len(), 2);
+        // First match: line 0, byte offset 6
+        assert_eq!(search.matches[0].line_index, 0);
+        assert_eq!(search.matches[0].byte_start, 6);
+        assert_eq!(search.matches[0].byte_end, 9);
+        // Second match: line 2, byte offset 6
+        assert_eq!(search.matches[1].line_index, 2);
+        assert_eq!(search.matches[1].byte_start, 6);
+        assert_eq!(search.matches[1].byte_end, 9);
+    }
+
+    // -----------------------------------------------------------------------
+    // ResponseSearch::compute_matches - case insensitive
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn search_case_insensitive_basic() {
+        let mut search = ResponseSearch::new();
+        search.case_sensitive = false;
+        search.input = TextInput::new("hello".to_string());
+        search.compute_matches("Hello World HELLO", 1);
+        assert_eq!(search.matches.len(), 2);
+    }
+
+    #[test]
+    fn search_case_insensitive_mixed_case_query() {
+        let mut search = ResponseSearch::new();
+        search.case_sensitive = false;
+        search.input = TextInput::new("HeLLo".to_string());
+        search.compute_matches("hello HELLO Hello", 1);
+        assert_eq!(search.matches.len(), 3);
+    }
+
+    #[test]
+    fn search_case_insensitive_no_match() {
+        let mut search = ResponseSearch::new();
+        search.case_sensitive = false;
+        search.input = TextInput::new("xyz".to_string());
+        search.compute_matches("hello world", 1);
+        assert_eq!(search.matches.len(), 0);
+    }
+
+    #[test]
+    fn search_case_insensitive_empty_query() {
+        let mut search = ResponseSearch::new();
+        search.case_sensitive = false;
+        search.input = TextInput::new(String::new());
+        search.compute_matches("hello world", 1);
+        assert_eq!(search.matches.len(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // ResponseSearch::compute_matches - caching behavior
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn search_caching_same_generation_skips_recompute() {
+        let mut search = ResponseSearch::new();
+        search.case_sensitive = true;
+        search.input = TextInput::new("a".to_string());
+        search.compute_matches("a b a", 1);
+        assert_eq!(search.matches.len(), 2);
+
+        // Manually clear matches to detect if recomputation occurs
+        search.matches.clear();
+        search.compute_matches("a b a", 1);
+        // Should still be empty because cache hit prevents recompute
+        assert_eq!(search.matches.len(), 0);
+    }
+
+    #[test]
+    fn search_caching_different_generation_recomputes() {
+        let mut search = ResponseSearch::new();
+        search.case_sensitive = true;
+        search.input = TextInput::new("a".to_string());
+        search.compute_matches("a b a", 1);
+        assert_eq!(search.matches.len(), 2);
+
+        search.matches.clear();
+        // Different body_generation forces recomputation
+        search.compute_matches("a b a", 2);
+        assert_eq!(search.matches.len(), 2);
+    }
+
+    #[test]
+    fn search_caching_different_query_recomputes() {
+        let mut search = ResponseSearch::new();
+        search.case_sensitive = true;
+        search.input = TextInput::new("a".to_string());
+        search.compute_matches("a b c", 1);
+        assert_eq!(search.matches.len(), 1);
+
+        // Change query
+        search.input = TextInput::new("b".to_string());
+        search.compute_matches("a b c", 1);
+        assert_eq!(search.matches.len(), 1);
+        assert_eq!(search.matches[0].byte_start, 2);
+    }
+
+    #[test]
+    fn search_caching_case_sensitivity_change_recomputes() {
+        let mut search = ResponseSearch::new();
+        search.case_sensitive = true;
+        search.input = TextInput::new("a".to_string());
+        search.compute_matches("A a A", 1);
+        // Case sensitive: only lowercase 'a' matches
+        assert_eq!(search.matches.len(), 1);
+
+        // Toggle case sensitivity
+        search.case_sensitive = false;
+        search.compute_matches("A a A", 1);
+        // Case insensitive: all 'a'/'A' match
+        assert_eq!(search.matches.len(), 3);
+    }
+
+    // -----------------------------------------------------------------------
+    // ResponseSearch::compute_matches - Unicode
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn search_case_sensitive_unicode_at_end() {
+        let mut search = ResponseSearch::new();
+        search.case_sensitive = true;
+        // Search for a multibyte emoji at the end of the text so the
+        // byte-level `start += 1` advance after the match does not land
+        // inside a multibyte char (there is nothing left to search).
+        search.input = TextInput::new("\u{1F600}".to_string());
+        search.compute_matches("hello \u{1F600}", 1);
+        assert_eq!(search.matches.len(), 1);
+        assert_eq!(search.matches[0].line_index, 0);
+        // "hello " is 6 bytes, emoji starts at byte 6
+        assert_eq!(search.matches[0].byte_start, 6);
+        // Emoji is 4 bytes
+        assert_eq!(search.matches[0].byte_end, 10);
+    }
+
+    #[test]
+    fn search_case_sensitive_ascii_after_unicode() {
+        let mut search = ResponseSearch::new();
+        search.case_sensitive = true;
+        // Search for an ASCII pattern that appears after a multibyte char.
+        // The case-sensitive path uses byte-level find, so searching for
+        // ASCII content is safe regardless of preceding multibyte chars.
+        search.input = TextInput::new("world".to_string());
+        search.compute_matches("\u{1F600} world", 1);
+        assert_eq!(search.matches.len(), 1);
+        // "\u{1F600} " is 5 bytes (4 byte emoji + 1 space)
+        assert_eq!(search.matches[0].byte_start, 5);
+        assert_eq!(search.matches[0].byte_end, 10);
+    }
+
+    #[test]
+    fn search_case_insensitive_unicode_text() {
+        let mut search = ResponseSearch::new();
+        search.case_sensitive = false;
+        search.input = TextInput::new("\u{00FC}".to_string()); // u-umlaut
+        search.compute_matches("gr\u{00FC}n and GR\u{00DC}N", 1);
+        // \u{00FC} lowercases to itself; \u{00DC} lowercases to \u{00FC}
+        assert_eq!(search.matches.len(), 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // ResponseSearch::compute_matches - overlapping patterns
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn search_case_sensitive_overlapping() {
+        let mut search = ResponseSearch::new();
+        search.case_sensitive = true;
+        search.input = TextInput::new("aa".to_string());
+        search.compute_matches("aaa", 1);
+        // "aaa" contains "aa" at position 0 and position 1
+        assert_eq!(search.matches.len(), 2);
+        assert_eq!(search.matches[0].byte_start, 0);
+        assert_eq!(search.matches[1].byte_start, 1);
     }
 }
